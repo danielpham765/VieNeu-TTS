@@ -194,7 +194,7 @@ class VieNeuTTS:
         
         Args:
             audio: Audio waveform
-            output_path: Path to save the audio file
+            output_path: Path to save the audio file  # ← You specify the full path here
         """
         import soundfile as sf
         sf.write(output_path, audio, self.sample_rate)
@@ -528,8 +528,8 @@ class VieNeuTTS:
         final_wav = join_audio_chunks(all_wavs, self.sample_rate, silence_p, crossfade_p)
 
         # Apply watermark if available
-        if self.watermarker:
-            final_wav = self.watermarker.apply_watermark(final_wav, sample_rate=self.sample_rate)
+        # if self.watermarker:
+        #     final_wav = self.watermarker.apply_watermark(final_wav, sample_rate=self.sample_rate)
 
         return final_wav
 
@@ -575,8 +575,8 @@ class VieNeuTTS:
                 prompt_ids = self._apply_chat_template(ref_codes, ref_text, chunk)
                 output_str = self._infer_torch(prompt_ids, temperature, top_k)
                 wav = self._decode(output_str)
-                if self.watermarker:
-                    wav = self.watermarker.apply_watermark(wav, sample_rate=self.sample_rate)
+                # if self.watermarker:
+                #     wav = self.watermarker.apply_watermark(wav, sample_rate=self.sample_rate)
                 yield wav
 
     def _decode(self, codes: str):
@@ -722,8 +722,8 @@ class VieNeuTTS:
                 curr_codes = token_cache[tokens_start:tokens_end]
                 recon = self._decode("".join(curr_codes))
                 # Apply watermark if available
-                if self.watermarker:
-                    recon = self.watermarker.apply_watermark(recon, sample_rate=self.sample_rate)
+                # if self.watermarker:
+                #     recon = self.watermarker.apply_watermark(recon, sample_rate=self.sample_rate)
                 
                 recon = recon[sample_start:sample_end]
                 audio_cache.append(recon)
@@ -757,8 +757,8 @@ class VieNeuTTS:
             curr_codes = token_cache[tokens_start:]
             recon = self._decode("".join(curr_codes))
             # Apply watermark if available
-            if self.watermarker:
-                recon = self.watermarker.apply_watermark(recon, sample_rate=self.sample_rate)
+            # if self.watermarker:
+            #     recon = self.watermarker.apply_watermark(recon, sample_rate=self.sample_rate)
 
             recon = recon[sample_start:]
             audio_cache.append(recon)
@@ -1206,8 +1206,8 @@ class FastVieNeuTTS:
             wav = join_audio_chunks(all_wavs, self.sample_rate, silence_p, crossfade_p)
 
         # Apply watermark if available
-        if self.watermarker:
-            wav = self.watermarker.apply_watermark(wav, sample_rate=self.sample_rate)
+        # if self.watermarker:
+        #     wav = self.watermarker.apply_watermark(wav, sample_rate=self.sample_rate)
             
         return wav
     
@@ -1258,8 +1258,8 @@ class FastVieNeuTTS:
             batch_wavs = [self._decode(codes) for codes in batch_codes]
             
             # Apply watermark if available
-            if self.watermarker:
-                batch_wavs = [self.watermarker.apply_watermark(w, sample_rate=self.sample_rate) for w in batch_wavs]
+            # if self.watermarker:
+            #     batch_wavs = [self.watermarker.apply_watermark(w, sample_rate=self.sample_rate) for w in batch_wavs]
                 
             all_wavs.extend(batch_wavs)
             
@@ -1299,7 +1299,7 @@ class FastVieNeuTTS:
             
         if ref_codes is None or ref_text is None:
              raise ValueError("Must provide either 'voice' dict or both 'ref_codes' and 'ref_text'.")
-        
+
         # Update generation config
         self.gen_config.temperature = temperature
         self.gen_config.top_k = top_k
@@ -1565,8 +1565,8 @@ class RemoteVieNeuTTS(VieNeuTTS):
         # Join all chunks with optional padding/crossfade
         final_wav = join_audio_chunks(all_wavs, self.sample_rate, silence_p, crossfade_p)
 
-        if self.watermarker:
-            final_wav = self.watermarker.apply_watermark(final_wav, sample_rate=self.sample_rate)
+        # if self.watermarker:
+        #     final_wav = self.watermarker.apply_watermark(final_wav, sample_rate=self.sample_rate)
             
         return final_wav    
 
@@ -1656,8 +1656,8 @@ class RemoteVieNeuTTS(VieNeuTTS):
                                 recon = self._decode("".join(curr_codes))
                                 
                                 # Apply watermark if available
-                                if self.watermarker:
-                                    recon = self.watermarker.apply_watermark(recon, sample_rate=self.sample_rate)
+                                # if self.watermarker:
+                                #     recon = self.watermarker.apply_watermark(recon, sample_rate=self.sample_rate)
                                 
                                 recon = recon[sample_start:sample_end]
                                 audio_cache.append(recon)
@@ -1739,8 +1739,8 @@ class RemoteVieNeuTTS(VieNeuTTS):
             # Join chunks
             final_wav = join_audio_chunks(wavs, self.sample_rate, silence_p, crossfade_p)
             
-            if self.watermarker:
-                final_wav = self.watermarker.apply_watermark(final_wav, sample_rate=self.sample_rate)
+            # if self.watermarker:
+            #     final_wav = self.watermarker.apply_watermark(final_wav, sample_rate=self.sample_rate)
                 
             return final_wav
             

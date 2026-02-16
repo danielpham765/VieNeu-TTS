@@ -21,6 +21,11 @@ import threading
 import yaml
 import gc
 
+# Suppress PyTorch warnings for cleaner output
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="neucodec")
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+
 from vieneu.core_xpu import XPUVieNeuTTS
 from vieneu_utils.core_utils import split_text_into_chunks, join_audio_chunks, env_bool
 from functools import lru_cache
@@ -36,6 +41,11 @@ except ImportError:
     pass
 
 print("⏳ Đang khởi động VieNeu-TTS (Phiên bản tối ưu cho Intel XPU)...")
+
+# Create output directory on startup
+OUTPUT_DIR = "output_audio"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+print(f"📁 Output folder: {os.path.abspath(OUTPUT_DIR)}")
 
 
 # --- CONSTANTS & CONFIG ---
@@ -116,6 +126,10 @@ def load_model(backbone_choice: str, codec_choice: str, device_choice: str,
     """Load model with XPU optimizations"""
     global tts, current_backbone, current_codec, model_loaded
     model_loaded = False 
+    
+    # Clean up empty token to avoid "Bearer " header issue
+    if custom_hf_token is not None and custom_hf_token.strip() == "":
+        custom_hf_token = None
     
     yield (
         "⏳ Đang tải model lên Intel XPU... Vui lòng chờ trong giây lát...",
@@ -282,7 +296,7 @@ def load_model(backbone_choice: str, codec_choice: str, device_choice: str,
 
 def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: str, 
                       mode_tab: str, generation_mode: str,
-                      use_batch: bool, max_batch_size_run: int, # Added as decoys
+                      use_batch: bool, max_batch_size_run: int,
                       temperature: float, max_chars_chunk: int):
     """Synthesis using XPU logic (Sequential generation with autocast)"""
     global tts, current_backbone, current_codec, model_loaded
@@ -339,55 +353,79 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
     
     # === STANDARD MODE ===
     if generation_mode == "Standard (Một lần)":
-        # Note: use_batch and max_batch_size_run are available here but currently ignored/decoy
         yield None, f"🚀 Bắt đầu tổng hợp trên Intel XPU ({total_chunks} đoạn)..."
         
         all_wavs = []
         sr = 24000
         start_time = time.time()
         
-        if use_batch and total_chunks > 1:
-            try:
-                for i in range(0, len(text_chunks), max_batch_size_run):
-                    yield None, print(f" đang xử lý batch {i//max_batch_size_run + 1} ...")
-                    batch_chunks = text_chunks[i : i + max_batch_size_run]
-                    
-                    # Gọi hàm infer_batch đã viết ở trên
-                    batch_results = tts.infer_batch(
-                        texts = batch_chunks,  
-                        ref_codes=ref_codes, 
-                        ref_text=ref_text_raw,
-                        temperature=temperature
-                    )
-                    
-                    if batch_results is not None and len(batch_results) > 0:
-                        all_wavs.extend(batch_results)
-
-                if not all_wavs:
-                    yield None, "❌ Không sinh được audio nào."
-                    return
-
-                yield None, "💾 Đang ghép file và lưu..."
+        try:
+            # Sequential processing (Native XPU backend)
+            for i, chunk in enumerate(text_chunks):
+                # Send progress update that will be visible in API
+                progress_msg = f"⏳ Đang xử lý đoạn {i+1}/{total_chunks} (XPU Bfloat16)..."
+                yield None, progress_msg
                 
-                final_wav = join_audio_chunks(all_wavs, sr=sr, silence_p=0.15)
-            
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                    sf.write(tmp.name, final_wav, sr)
-                    output_path = tmp.name
+                chunk_wav = tts.infer(
+                    chunk, 
+                    ref_codes=ref_codes, 
+                    ref_text=ref_text_raw,
+                    temperature=temperature
+                )
                 
-                process_time = time.time() - start_time
-                speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
+                if chunk_wav is not None and len(chunk_wav) > 0:
+                    all_wavs.append(chunk_wav)
+                    # Optional: Send completion update for this chunk
+                    yield None, f"✅ Hoàn thành đoạn {i+1}/{total_chunks}"
             
-                yield output_path, f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}) (Backend: Intel XPU)"
-                cleanup_gpu_memory()
+            if not all_wavs:
+                yield None, "❌ Không sinh được audio nào."
                 return
             
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                cleanup_gpu_memory()
-                yield None, f"❌ Lỗi Standard Mode khi infer batch: {str(e)}"
-                return
+            yield None, "💾 Đang ghép file và lưu..."
+            
+            final_wav = join_audio_chunks(all_wavs, sr=sr, silence_p=0.15)
+            
+            # Replace the tempfile lines with permanent storage:
+            # OLD:
+            # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            #     sf.write(tmp.name, final_wav, sr)
+            #     output_path = tmp.name
+    
+            # NEW - Save to specific folder:
+            import os
+            from datetime import datetime
+    
+            output_dir = "output_audio"  # Or any path you want
+            os.makedirs(output_dir, exist_ok=True)
+    
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = os.path.join(output_dir, f"tts_output_{timestamp}.wav")
+            sf.write(output_path, final_wav, sr)
+            
+            # Verify file was written
+            if os.path.exists(output_path):
+                file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                print(f"✅ File saved successfully: {output_path} ({file_size_mb:.2f} MB)")
+            else:
+                print(f"⚠️ WARNING: File not found after write: {output_path}")
+            
+            # Get absolute path for user clarity
+            abs_output_path = os.path.abspath(output_path)
+            
+            process_time = time.time() - start_time
+            speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
+            
+            yield output_path, f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}) (Backend: Intel XPU)\n📁 File đã lưu tại: {abs_output_path}"
+            cleanup_gpu_memory()
+            return
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            cleanup_gpu_memory()
+            yield None, f"❌ Lỗi Standard Mode khi infer batch: {str(e)}"
+            return
         try:
             # Sequential processing (Native XPU backend)
             for i, chunk in enumerate(text_chunks):
@@ -411,14 +449,37 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             
             final_wav = join_audio_chunks(all_wavs, sr=sr, silence_p=0.15)
             
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                sf.write(tmp.name, final_wav, sr)
-                output_path = tmp.name
+            # Replace the tempfile lines with permanent storage:
+            # OLD:
+            # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            #     sf.write(tmp.name, final_wav, sr)
+            #     output_path = tmp.name
+    
+            # NEW - Save to specific folder:
+            import os
+            from datetime import datetime
+    
+            output_dir = "output_audio"  # Or any path you want
+            os.makedirs(output_dir, exist_ok=True)
+    
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = os.path.join(output_dir, f"tts_output_{timestamp}.wav")
+            sf.write(output_path, final_wav, sr)
+            
+            # Verify file was written
+            if os.path.exists(output_path):
+                file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                print(f"✅ File saved successfully: {output_path} ({file_size_mb:.2f} MB)")
+            else:
+                print(f"⚠️ WARNING: File not found after write: {output_path}")
+            
+            # Get absolute path for user clarity
+            abs_output_path = os.path.abspath(output_path)
             
             process_time = time.time() - start_time
             speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
             
-            yield output_path, f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}) (Backend: Intel XPU)"
+            yield output_path, f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}) (Backend: Intel XPU)\n📁 File đã lưu tại: {abs_output_path}"
             cleanup_gpu_memory()
             
         except Exception as e:
@@ -536,9 +597,21 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
         
         if full_audio_buffer:
             final_wav = np.concatenate(full_audio_buffer)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                sf.write(tmp.name, final_wav, sr)
-                yield tmp.name, f"✅ Hoàn tất Streaming! (Intel XPU)"
+            
+            # Save to permanent location instead of temp
+            from datetime import datetime
+            
+            output_dir = "output_audio"
+            os.makedirs(output_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = os.path.join(output_dir, f"tts_stream_{timestamp}.wav")
+            sf.write(output_path, final_wav, sr)
+            
+            # Get absolute path for user clarity
+            abs_output_path = os.path.abspath(output_path)
+            
+            yield output_path, f"✅ Hoàn tất Streaming! (Intel XPU)\n📁 File đã lưu tại: {abs_output_path}"
             
             cleanup_gpu_memory()
 
@@ -898,4 +971,13 @@ if __name__ == "__main__":
     if server_name == "0.0.0.0" and os.getenv("GRADIO_SHARE") is None:
         share = False
 
-    demo.queue().launch(server_name=server_name, server_port=server_port, share=share)
+    print(f"🚀 Launching app on http://{server_name}:{server_port}")
+    print(f"📡 API is automatically enabled")
+    print(f"📋 API endpoints: /api/predict, /api/load_model, /api/synthesize_speech")
+    
+    demo.queue().launch(
+        server_name=server_name, 
+        server_port=server_port, 
+        share=share
+        # Note: show_api is removed in Gradio 6.0 - API is always available
+    )

@@ -188,8 +188,8 @@ class XPUVieNeuTTS(VieNeuTTS):
             output_str = self.tokenizer.decode(generated_ids, add_special_tokens=False)
             wav = self._decode(output_str)
             
-            if self.watermarker:
-                wav = self.watermarker.apply_watermark(wav, sample_rate=self.sample_rate)
+            # if self.watermarker:
+            #     wav = self.watermarker.apply_watermark(wav, sample_rate=self.sample_rate)
                 
             results.append(wav)
 
