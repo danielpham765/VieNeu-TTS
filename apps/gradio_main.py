@@ -1,10 +1,22 @@
 import gradio as gr
-print("⏳ Đang khởi động VieNeu-TTS... Vui lòng chờ...")
+import os
+
+# Suppress PyTorch warnings for cleaner output
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="neucodec")
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+
+print("⏳ Đang khởi động VieNeu-TTS...")
+
+# Create output directory on startup
+OUTPUT_DIR = "output_audio"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+print(f"📁 Output folder: {os.path.abspath(OUTPUT_DIR)}")
+
 import soundfile as sf
 import tempfile
 import torch
 from vieneu import VieNeuTTS, FastVieNeuTTS
-import os
 import sys
 import time
 import numpy as np
@@ -148,7 +160,11 @@ def load_model(backbone_choice: str, codec_choice: str, device_choice: str,
     """Load model with optimizations and max batch size control"""
     global tts, current_backbone, current_codec, model_loaded, using_lmdeploy
     lmdeploy_error_reason = None
-    model_loaded = False # Ensure we don't try to use a half-loaded model
+    model_loaded = False
+    
+    # Clean up empty token to avoid "Bearer " header issue
+    if custom_hf_token is not None and custom_hf_token.strip() == "":
+        custom_hf_token = None
     
     yield (
         "⏳ Đang tải model với tối ưu hóa... Lưu ý: Quá trình này sẽ tốn thời gian. Vui lòng kiên nhẫn.",
@@ -630,8 +646,6 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
         total_chunks = len(text_chunks)
 
         batch_info = " (Batch Mode)" if use_batch and using_lmdeploy and total_chunks > 1 else ""
-        
-        # Show batch size info
         batch_size_info = ""
         if use_batch and using_lmdeploy and hasattr(tts, 'max_batch_size'):
             batch_size_info = f" [Max batch: {tts.max_batch_size}]"
@@ -640,15 +654,11 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
         
         all_wavs = []
         sr = 24000
-        
         start_time = time.time()
         
         try:
-            # Use batch processing if enabled and using LMDeploy
             if use_batch and using_lmdeploy and hasattr(tts, 'infer_batch') and total_chunks > 1:
-                # Show how many mini-batches will be processed
                 num_batches = (total_chunks + max_batch_size_run - 1) // max_batch_size_run
-                
                 yield None, f"⚡ Xử lý {num_batches} mini-batch(es) (max {max_batch_size_run} đoạn/batch)..."
                 
                 chunk_wavs = tts.infer_batch(
@@ -663,9 +673,8 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                 for chunk_wav in chunk_wavs:
                     if chunk_wav is not None and len(chunk_wav) > 0:
                         all_wavs.append(chunk_wav)
-
             else:
-                # Sequential processing
+                # Sequential processing with progress updates
                 for i, chunk in enumerate(text_chunks):
                     yield None, f"⏳ Đang xử lý đoạn {i+1}/{total_chunks}..."
                     
@@ -691,23 +700,32 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             # Default silence=0.15s to match SDK
             final_wav = join_audio_chunks(all_wavs, sr=sr, silence_p=0.15)
             
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                sf.write(tmp.name, final_wav, sr)
-                output_path = tmp.name
+            # Save to specific folder
+            from datetime import datetime
+            
+            output_dir = "output_audio"
+            os.makedirs(output_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = os.path.join(output_dir, f"tts_output_{timestamp}.wav")
+            sf.write(output_path, final_wav, sr)
+            
+            # Verify file was written
+            if os.path.exists(output_path):
+                file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                print(f"✅ File saved successfully: {output_path} ({file_size_mb:.2f} MB)")
+            else:
+                print(f"⚠️ WARNING: File not found after write: {output_path}")
+            
+            abs_output_path = os.path.abspath(output_path)
             
             process_time = time.time() - start_time
-            backend_info = f" (Backend: {'LMDeploy 🚀' if using_lmdeploy else 'Standard 📦'})"
             speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
             
-            
-            yield output_path, f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}){backend_info}"
-            
-            # Cleanup memory
-            if using_lmdeploy and hasattr(tts, 'cleanup_memory'):
-                tts.cleanup_memory()
-            
+            yield output_path, f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info})\n📁 File đã lưu tại: {abs_output_path}"
             cleanup_gpu_memory()
-            
+            return
+
         except torch.cuda.OutOfMemoryError as e:
             cleanup_gpu_memory()
             yield None, (
@@ -839,19 +857,24 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
         
         if full_audio_buffer:
             final_wav = np.concatenate(full_audio_buffer)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                sf.write(tmp.name, final_wav, sr)
-                
-                yield tmp.name, f"✅ Hoàn tất Streaming! ({backend_info})"
             
-            # Cleanup memory
-            if using_lmdeploy and hasattr(tts, 'cleanup_memory'):
-                tts.cleanup_memory()
+            # Save to specific folder
+            from datetime import datetime
+            
+            output_dir = "output_audio"
+            os.makedirs(output_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = os.path.join(output_dir, f"tts_stream_{timestamp}.wav")
+            sf.write(output_path, final_wav, sr)
+            
+            abs_output_path = os.path.abspath(output_path)
+            
+            yield output_path, f"✅ Hoàn tất Streaming!\n📁 File đã lưu tại: {abs_output_path}"
             
             cleanup_gpu_memory()
 
-
-# --- 4. UI SETUP ---
+# --- 3. UI SETUP ---
 theme = gr.themes.Soft(
     primary_hue="indigo",
     secondary_hue="cyan",
@@ -864,197 +887,58 @@ theme = gr.themes.Soft(
 
 css = """
 .container { max-width: 1400px; margin: auto; }
-.header-box {
-    text-align: center;
-    margin-bottom: 25px;
-    padding: 25px;
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-    border-radius: 12px;
-    color: white !important;
-}
-.header-title {
-    font-size: 2.5rem;
-    font-weight: 800;
-    color: white !important;
-}
-.gradient-text {
-    background: -webkit-linear-gradient(45deg, #60A5FA, #22D3EE);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
-.header-icon {
-    color: white;
-}
-.status-box {
-    font-weight: 500;
-    border: 1px solid rgba(99, 102, 241, 0.1);
-    background: rgba(99, 102, 241, 0.03);
-    border-radius: 8px;
-}
-.status-box textarea {
-    text-align: center;
-    font-family: inherit;
-}
-.model-card-content {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    align-items: center;
-    gap: 15px;
-    font-size: 0.9rem;
-    text-align: center;
-    color: white !important;
-}
-.model-card-item {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    color: white !important;
-}
-.model-card-item strong {
-    color: white !important;
-}
-.model-card-item span {
-    color: white !important;
-}
-.model-card-link {
-    color: #60A5FA;
-    text-decoration: none;
-    font-weight: 500;
-    transition: color 0.2s;
-}
-.model-card-link:hover {
-    color: #22D3EE;
-    text-decoration: underline;
-}
-.warning-banner {
-    background-color: #fffbeb;
-    border: 1px solid #fef3c7;
-    border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 20px;
-}
-.warning-banner-title {
-    color: #92400e;
-    font-weight: 700;
-    font-size: 1.1rem;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 12px;
-}
-.warning-banner-grid {
-    display: flex;
-    gap: 15px;
-    flex-wrap: wrap;
-}
-.warning-banner-item {
-    flex: 1;
-    min-width: 240px;
-    background: #fef3c7;
-    padding: 12px;
-    border-radius: 8px;
-    border: 1px solid #fde68a;
-}
-.warning-banner-item strong {
-    color: #b45309;
-    display: block;
-    margin-bottom: 4px;
-    font-size: 0.95rem;
-}
-.warning-banner-content {
-    color: #78350f;
-    font-size: 0.9rem;
-    line-height: 1.5;
-}
-.warning-banner-content b {
-    color: #451a03;
-    background: rgba(251, 191, 36, 0.2);
-    padding: 1px 4px;
-    border-radius: 4px;
-}
 """
 
-EXAMPLES_LIST = [
-    ["Về miền Tây không chỉ để ngắm nhìn sông nước hữu tình, mà còn để cảm nhận tấm chân tình của người dân nơi đây.", "Vĩnh (nam miền Nam)"],
-    ["Hà Nội những ngày vào thu mang một vẻ đẹp trầm mặc và cổ kính đến lạ thường.", "Bình (nam miền Bắc)"],
-]
-
-
-# Favicon (Parrot Emoji)
-head_html = """
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦜</text></svg>">
-"""
-
-with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo:
-
+with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS") as demo:
     with gr.Column(elem_classes="container"):
-        gr.HTML("""
-<div class="header-box">
-    <h1 class="header-title">
-        <span class="header-icon">🦜</span>
-        <span class="gradient-text">VieNeu-TTS Studio</span>
-    </h1>
-    <div class="model-card-content">
-        <div class="model-card-item">
-            <strong>Models:</strong>
-            <a href="https://huggingface.co/pnnbao-ump/VieNeu-TTS" target="_blank" class="model-card-link">VieNeu-TTS</a>
-            <span>•</span>
-            <a href="https://huggingface.co/pnnbao-ump/VieNeu-TTS-0.3B" target="_blank" class="model-card-link">VieNeu-TTS-0.3B</a>
-        </div>
-        <div class="model-card-item">
-            <strong>Repository:</strong>
-            <a href="https://github.com/pnnbao97/VieNeu-TTS" target="_blank" class="model-card-link">GitHub</a>
-        </div>
-        <div class="model-card-item">
-            <strong>Tác giả:</strong>
-            <a href="https://www.facebook.com/pnnbao97" target="_blank" class="model-card-link">Phạm Nguyễn Ngọc Bảo</a>
-        </div>
-        <div class="model-card-item">
-            <strong>Discord:</strong>
-            <a href="https://discord.gg/yJt8kzjzWZ" target="_blank" class="model-card-link">Tham gia cộng đồng</a>
-        </div>
-    </div>
-</div>
-        """)
+        gr.Markdown("# 🦜 VieNeu-TTS Studio")
         
-        # --- CONFIGURATION ---
+        # Model Configuration
         with gr.Group():
             with gr.Row():
                 backbone_select = gr.Dropdown(
                     list(BACKBONE_CONFIGS.keys()) + ["Custom Model"], 
-                    value="VieNeu-TTS (GPU)", 
+                    value="VieNeu-TTS-0.3B (GGUF)", 
                     label="🦜 Backbone"
                 )
-                codec_select = gr.Dropdown(list(CODEC_CONFIGS.keys()), value="NeuCodec (Distill)", label="🎵 Codec")
-                device_choice = gr.Radio(get_available_devices(), value="Auto", label="🖥️ Device")
+                codec_select = gr.Dropdown(
+                    list(CODEC_CONFIGS.keys()), 
+                    value="NeuCodec (Distill)", 
+                    label="🎵 Codec"
+                )
+                device_choice = gr.Radio(
+                    get_available_devices(), 
+                    value="Auto", 
+                    label="🖥️ Device"
+                )
+            
+            force_lmdeploy = gr.Checkbox(
+                value=False, 
+                label="⚡ Enable LMDeploy (GPU only)",
+                info="Enables optimizations for faster generation"
+            )
             
             with gr.Row(visible=False) as custom_model_group:
                 custom_backbone_model_id = gr.Textbox(
                     label="📦 Custom Model ID",
-                    placeholder="pnnbao-ump/VieNeu-TTS-0.3B-lora-ngoc-huyen",
-                    info="Nhập HuggingFace Repo ID hoặc đường dẫn local",
+                    placeholder="username/model-name",
                     scale=2
                 )
                 custom_backbone_hf_token = gr.Textbox(
-                    label="🔑 HF Token (nếu private)",
-                    placeholder="Để trống nếu repo public",
+                    label="🔑 HF Token",
                     type="password",
-                    info="Token để truy cập repo private",
                     scale=1
                 )
                 custom_backbone_base_model = gr.Dropdown(
                     [k for k in BACKBONE_CONFIGS.keys() if "gguf" not in k.lower()],
-                    label="🔗 Base Model (cho LoRA)",
+                    label="🔗 Base Model (for LoRA)",
                     value="VieNeu-TTS-0.3B (GPU)",
                     visible=False,
-                    info="Model gốc để merge với LoRA",
                     scale=1
                 )
             
             with gr.Row():
-                use_lmdeploy_cb = gr.Checkbox(
+                force_lmdeploy = gr.Checkbox(
                     value=True, 
                     label="🚀 Optimize with LMDeploy (Khuyên dùng cho NVIDIA GPU)",
                     info="Tick nếu bạn dùng GPU để tăng tốc độ tổng hợp đáng kể."
@@ -1087,17 +971,16 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                 </div>
             </div>
             """)
-
             btn_load = gr.Button("🔄 Tải Model", variant="primary")
             model_status = gr.Markdown("⏳ Chưa tải model.")
         
-        with gr.Row(elem_classes="container"):
-            # --- INPUT ---
+        # Input/Output
+        with gr.Row():
             with gr.Column(scale=3):
                 text_input = gr.Textbox(
-                    label=f"Văn bản",
+                    label="Văn bản",
                     lines=4,
-                    value="Hà Nội, trái tim của Việt Nam, là một thành phố ngàn năm văn hiến với bề dày lịch sử và văn hóa độc đáo. Bước chân trên những con phố cổ kính quanh Hồ Hoàn Kiếm, du khách như được du hành ngược thời gian, chiêm ngưỡng kiến trúc Pháp cổ điển hòa quyện với nét kiến trúc truyền thống Việt Nam. Mỗi con phố trong khu phố cổ mang một tên gọi đặc trưng, phản ánh nghề thủ công truyền thống từng thịnh hành nơi đây như phố Hàng Bạc, Hàng Đào, Hàng Mã. Ẩm thực Hà Nội cũng là một điểm nhấn đặc biệt, từ tô phở nóng hổi buổi sáng, bún chả thơm lừng trưa hè, đến chè Thái ngọt ngào chiều thu. Những món ăn dân dã này đã trở thành biểu tượng của văn hóa ẩm thực Việt, được cả thế giới yêu mến. Người Hà Nội nổi tiếng với tính cách hiền hòa, lịch thiệp nhưng cũng rất cầu toàn trong từng chi tiết nhỏ, từ cách pha trà sen cho đến cách chọn hoa sen tây để thưởng trà.",
+                    value="Xin chào, đây là ví dụ về việc tổng hợp giọng nói tiếng Việt."
                 )
                 
                 with gr.Tabs() as tabs:
@@ -1125,68 +1008,40 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                         """)              
                 
                 generation_mode = gr.Radio(
-                    ["Standard (Một lần)"],
+                    ["Standard (Một lần)", "Streaming (Real-time)"],
                     value="Standard (Một lần)",
                     label="Chế độ sinh"
                 )
+                
                 with gr.Row():
-                    use_batch = gr.Checkbox(
-                        value=True, 
-                        label="⚡ Batch Processing",
-                        info="Xử lý nhiều đoạn cùng lúc (chỉ áp dụng khi sử dụng GPU và đã cài đặt LMDeploy)"
-                    )
+                    use_batch = gr.Checkbox(value=True, label="⚡ Batch Processing")
                     max_batch_size_run = gr.Slider(
-                        minimum=1, 
-                        maximum=16, 
-                        value=4, 
-                        step=1, 
-                        label="📊 Batch Size (Generation)",
-                        info="Số lượng đoạn văn bản xử lý cùng lúc. Giá trị cao = nhanh hơn nhưng tốn VRAM hơn. Giảm xuống nếu gặp lỗi Out of Memory."
+                        minimum=1, maximum=128, value=64, step=1,
+                        label="📊 Batch Size"
                     )
                 
-                with gr.Accordion("⚙️ Cài đặt nâng cao (Generation)", open=False):
+                with gr.Accordion("⚙️ Advanced Settings", open=False):
                     with gr.Row():
                         temperature_slider = gr.Slider(
                             minimum=0.1, maximum=1.5, value=1.0, step=0.1,
-                            label="🌡️ Temperature", 
-                            info="Độ sáng tạo. Cao = đa dạng cảm xúc hơn nhưng dễ lỗi. Thấp = ổn định hơn."
+                            label="🌡️ Temperature"
                         )
                         max_chars_chunk_slider = gr.Slider(
-                            minimum=128, maximum=512, value=256, step=32,
-                            label="📝 Max Chars per Chunk",
-                            info="Độ dài tối đa mỗi đoạn xử lý."
+                            minimum=64, maximum=512, value=256, step=16,
+                            label="📝 Max Chars per Chunk"
                         )
                 
-                # State to track current mode (replaces unreliable Textbox/Tabs input)
                 current_mode_state = gr.State("preset_mode")
                 
                 with gr.Row():
                     btn_generate = gr.Button("🎵 Bắt đầu", variant="primary", scale=2, interactive=False)
                     btn_stop = gr.Button("⏹️ Dừng", variant="stop", scale=1, interactive=False)
             
-            # --- OUTPUT ---
             with gr.Column(scale=2):
-                audio_output = gr.Audio(
-                    label="Kết quả",
-                    type="filepath",
-                    autoplay=True
-                )
-                status_output = gr.Textbox(
-                    label="Trạng thái", 
-                    elem_classes="status-box",
-                    lines=2,
-                    max_lines=10,
-                    show_copy_button=True
-                )
-                gr.Markdown("<div style='text-align: center; color: #64748b; font-size: 0.8rem;'>🔒 Audio được đóng dấu bản quyền ẩn (Watermarker) để bảo mật và định danh AI.</div>")
+                audio_output = gr.Audio(label="Kết quả", type="filepath", autoplay=True)
+                status_output = gr.Textbox(label="Trạng thái", lines=3, max_lines=10)
         
         # # --- EVENT HANDLERS ---
-        # def update_info(backbone: str) -> str:
-        #     return f"Streaming: {'✅' if BACKBONE_CONFIGS[backbone]['supports_streaming'] else '❌'}"
-        
-        # backbone_select.change(update_info, backbone_select, model_status)
-        
-        # Handler to show/hide Voice Cloning tab
         def on_codec_change(codec: str, current_mode: str):
             is_onnx = "onnx" in codec.lower()
             # If switching to ONNX and we are on custom mode, switch back to preset
@@ -1222,88 +1077,62 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
         
         # --- Custom Model Event Handlers ---
         def on_backbone_change(choice):
-            is_custom = (choice == "Custom Model")
-            return gr.update(visible=is_custom)
-
+            return gr.update(visible=(choice == "Custom Model"))
+        
         backbone_select.change(
             on_backbone_change,
             inputs=[backbone_select],
             outputs=[custom_model_group]
         )
         
-        def on_custom_id_change(model_id):
-            # Auto detect LoRA and base model
-            if model_id and "lora" in model_id.lower():
-                # Detect base model: if "0.3" in name -> 0.3B, else VieNeu-TTS
-                if "0.3" in model_id:
-                    base_model = "VieNeu-TTS-0.3B (GPU)"
-                else:
-                    base_model = "VieNeu-TTS (GPU)"
-                
-                return (
-                    gr.update(visible=True, value=base_model),
-                    gr.update(), gr.update()
-                )
-            
-            return (
-                gr.update(visible=False),
-                gr.update(),
-                gr.update()
-            )
-            
-        custom_backbone_model_id.change(
-            on_custom_id_change,
-            inputs=[custom_backbone_model_id],
-            outputs=[custom_backbone_base_model, custom_audio, custom_text]
-        )
-
+        tab_preset.select(lambda: "preset_mode", outputs=current_mode_state)
+        tab_custom.select(lambda: "custom_mode", outputs=current_mode_state)
+        
         btn_load.click(
             fn=load_model,
-            inputs=[backbone_select, codec_select, device_choice, use_lmdeploy_cb,
-                    custom_backbone_model_id, custom_backbone_base_model, custom_backbone_hf_token],
-            outputs=[model_status, btn_generate, btn_load, btn_stop, voice_select, tab_preset, tab_custom, tabs, current_mode_state]
+            inputs=[
+                backbone_select, codec_select, device_choice, force_lmdeploy,
+                custom_backbone_model_id, custom_backbone_base_model, custom_backbone_hf_token
+            ],
+            outputs=[
+                model_status, btn_generate, btn_load, btn_stop, voice_select,
+                tab_preset, tab_custom, tabs, current_mode_state
+            ]
         )
-        
         
         generate_event = btn_generate.click(
             fn=synthesize_speech,
-            inputs=[text_input, voice_select, custom_audio, custom_text, current_mode_state, 
-                    generation_mode, use_batch, max_batch_size_run,
-                    temperature_slider, max_chars_chunk_slider],
+            inputs=[
+                text_input, voice_select, custom_audio, custom_text, current_mode_state,
+                generation_mode, use_batch, max_batch_size_run,
+                temperature_slider, max_chars_chunk_slider
+            ],
             outputs=[audio_output, status_output]
         )
         
-        # When generation starts, enable stop button
         btn_generate.click(lambda: gr.update(interactive=True), outputs=btn_stop)
-        # When generation ends/stops, disable stop button
         generate_event.then(lambda: gr.update(interactive=False), outputs=btn_stop)
         
         btn_stop.click(fn=None, cancels=[generate_event])
-        btn_stop.click(lambda: (None, "⏹️ Đã dừng tạo giọng nói."), outputs=[audio_output, status_output])
+        btn_stop.click(lambda: (None, "⏹️ Đã dừng."), outputs=[audio_output, status_output])
         btn_stop.click(lambda: gr.update(interactive=False), outputs=btn_stop)
-
-        # Persistence: Restore UI state on load
-        demo.load(
-            fn=restore_ui_state,
-            outputs=[model_status, btn_generate, btn_stop]
-        )
+        
+        demo.load(fn=restore_ui_state, outputs=[model_status, btn_generate, btn_stop])
 
 def main():
-    # Cho phép override từ biến môi trường (hữu ích cho Docker)
     server_name = os.getenv("GRADIO_SERVER_NAME", "127.0.0.1")
     server_port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
 
-    # Check running in Colab
     is_on_colab = os.getenv("COLAB_RELEASE_TAG") is not None
 
-    # Default:
-    # - Colab: share=True (convenient)
-    # - Docker/local: share=False (safe)
     share = env_bool("GRADIO_SHARE", default=is_on_colab)
     
-    # If server_name is "0.0.0.0" and GRADIO_SHARE is not set, disable sharing
     if server_name == "0.0.0.0" and os.getenv("GRADIO_SHARE") is None:
         share = False
+
+    print(f"🚀 Launching app on http://{server_name}:{server_port}")
+    print("📡 API is automatically enabled")
+    print("📋 API endpoints: /api/predict, /api/load_model, /api/synthesize_speech")
 
     demo.queue().launch(server_name=server_name, server_port=server_port, share=share)
 
