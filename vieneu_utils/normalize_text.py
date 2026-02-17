@@ -313,63 +313,84 @@ class VietnameseTTSNormalizer:
             else:
                 return f"{self.digits[tens]} mươi {self.digits[ones]}"
     
-    def _read_three_digits(self, n):
-        """Read three-digit numbers in Vietnamese."""
-        if n < 100:
-            return self._read_two_digits(n)
+    def _read_three_digits(self, number: int) -> str:
+        """Đọc số có 3 chữ số."""
+        if number == 0:
+            return ""
         
-        hundreds = n // 100
-        remainder = n % 100
-        result = f"{self.digits[hundreds]} trăm"
+        # Add bounds checking to prevent IndexError
+        if number < 0 or number > 999:
+            # Fallback: return the number as string if out of valid range
+            return str(number)
         
-        if remainder == 0:
-            return result
-        elif remainder < 10:
-            result += f" lẻ {self.digits[remainder]}"
-        else:
-            result += f" {self._read_two_digits(remainder)}"
+        hundreds = number // 100
+        remainder = number % 100
+        result = ""
+        
+        # Safely access digits array with bounds checking
+        if hundreds > 0:
+            if hundreds >= len(self.digits):
+                result = f"{hundreds} trăm"  # Fallback if index too large
+            else:
+                result = f"{self.digits[hundreds]} trăm"
+        
+        if remainder > 0:
+            if result:
+                result += " "
+            result += self._read_two_digits(remainder)
         
         return result
     
-    def _convert_number_to_words(self, num):
-        """Convert a number to Vietnamese words."""
-        if num == 0:
+    def _convert_number_to_words(self, number: int) -> str:
+        """Chuyển đổi số nguyên thành chữ."""
+        if number == 0:
             return "không"
         
-        if num < 0:
-            return f"âm {self._convert_number_to_words(-num)}"
+        # Add range validation
+        if number < 0:
+            return f"âm {self._convert_number_to_words(abs(number))}"
         
-        if num >= 1000000000:
-            billion = num // 1000000000
-            remainder = num % 1000000000
-            result = f"{self._read_three_digits(billion)} tỷ"
-            if remainder > 0:
-                result += f" {self._convert_number_to_words(remainder)}"
-            return result
+        # Handle very large numbers safely
+        if number > 999999999999:  # > 999 billion
+            return str(number)  # Return as-is for extremely large numbers
         
-        elif num >= 1000000:
-            million = num // 1000000
-            remainder = num % 1000000
-            result = f"{self._read_three_digits(million)} triệu"
-            if remainder > 0:
-                result += f" {self._convert_number_to_words(remainder)}"
-            return result
+        result = []
         
-        elif num >= 1000:
-            thousand = num // 1000
-            remainder = num % 1000
-            result = f"{self._read_three_digits(thousand)} nghìn"
-            if remainder > 0:
-                if remainder < 10:
-                    result += f" không trăm lẻ {self.digits[remainder]}"
-                elif remainder < 100:
-                    result += f" không trăm {self._read_two_digits(remainder)}"
-                else:
-                    result += f" {self._read_three_digits(remainder)}"
-            return result
+        # Tỷ (billion)
+        if number >= 1000000000:
+            billion = number // 1000000000
+            if billion < 1000:  # Ensure billion part is valid
+                result.append(f"{self._read_three_digits(billion)} tỷ")
+            else:
+                result.append(f"{billion} tỷ")  # Fallback
+            number %= 1000000000
         
-        else:
-            return self._read_three_digits(num)
+        # Triệu (million)
+        if number >= 1000000:
+            million = number // 1000000
+            if million < 1000:
+                result.append(f"{self._read_three_digits(million)} triệu")
+            else:
+                result.append(f"{million} triệu")
+            number %= 1000000
+        
+        # Nghìn (thousand)
+        if number >= 1000:
+            thousand = number // 1000
+            if thousand < 1000:
+                result.append(f"{self._read_three_digits(thousand)} nghìn")
+            else:
+                result.append(f"{thousand} nghìn")
+            number %= 1000
+        
+        # Còn lại (remainder)
+        if number > 0:
+            if number < 1000:
+                result.append(self._read_three_digits(number))
+            else:
+                result.append(str(number))
+        
+        return " ".join(result)
     
     def _number_to_words(self, text):
         """Convert all remaining numbers to words."""
