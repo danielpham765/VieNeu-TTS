@@ -156,6 +156,65 @@ def load_model(backbone_choice: str, codec_choice: str, device_choice: str,
     """Load model with optimizations and max batch size control"""
     global tts, current_backbone, current_codec, model_loaded, using_lmdeploy
     lmdeploy_error_reason = None
+    
+    # Check if model is already loaded with same configuration
+    if (model_loaded and tts is not None and 
+        current_backbone == backbone_choice and 
+        current_codec == codec_choice):
+        
+        success_msg = get_model_status_message()
+        
+        # Prepare voice update (reuse existing loaded voices)
+        try:
+            voices = tts.list_preset_voices()
+        except Exception:
+            voices = []
+        
+        has_voices = len(voices) > 0
+        
+        if has_voices:
+            default_v = tts._default_voice
+            is_tuple = (len(voices) > 0 and isinstance(voices[0], tuple))
+            voice_values = [v[1] for v in voices] if is_tuple else voices
+            
+            if not default_v and voice_values:
+                default_v = voice_values[0]
+            
+            if default_v and default_v not in voice_values:
+                if is_tuple:
+                    voices.append((default_v, default_v))
+                else:
+                    voices.append(default_v)
+            
+            if is_tuple:
+                voices.sort(key=lambda x: str(x[0]))
+            else:
+                voices.sort()
+            
+            voice_update = gr.update(choices=voices, value=default_v, interactive=True)
+            tab_p = gr.update(visible=True)
+            tab_c = gr.update(visible=True)
+            tab_sel = gr.update(selected="preset_mode")
+            mode_state = "preset_mode"
+        else:
+            msg = "⚠️ Không tìm thấy file voices.json. Vui lòng dùng Tab Voice Cloning."
+            voice_update = gr.update(choices=[msg], value=msg, interactive=False)
+            tab_p = gr.update(visible=True)
+            tab_c = gr.update(visible=True)
+            tab_sel = gr.update(selected="preset_mode")
+            mode_state = "preset_mode"
+        
+        yield (
+            f"✅ Model đã được tải sẵn!\n\n{success_msg}",
+            gr.update(interactive=True),  # btn_generate
+            gr.update(interactive=True),  # btn_load
+            gr.update(interactive=False), # btn_stop
+            voice_update,
+            tab_p, tab_c, tab_sel, mode_state
+        )
+        return
+    
+    # Otherwise, proceed with normal loading
     model_loaded = False
     
     # Clean up empty token to avoid "Bearer " header issue
