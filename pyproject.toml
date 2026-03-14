@@ -15,10 +15,9 @@ override-dependencies = [
 default-groups = ["web"]
 
 [[tool.uv.index]]
-name = "pytorch"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
-
 
 [[tool.uv.index]]
 name = "pypi"
@@ -38,30 +37,7 @@ explicit = true
 name = "vieneu"
 version = "1.2.9"
 description = "Advanced on-device Vietnamese TTS with instant voice cloning"
-readme = "README_PYPI.md"
-license = { file = "LICENSE" }
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Topic :: Multimedia :: Sound/Audio :: Speech",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Operating System :: OS Independent",
-]
-keywords = [
-    "text-to-speech",
-    "tts",
-    "vietnamese",
-    "voice-cloning",
-    "speech-synthesis",
-    "real-time",
-    "on-device"
-]
+readme = "README.md"
 authors = [
     { name = "Phạm Nguyễn Ngọc Bảo", email = "pnnbao@gmail.com" }
 ]
@@ -81,7 +57,6 @@ dependencies = [
 
 [project.urls]
 "Homepage" = "https://github.com/pnnbao97/VieNeu-TTS"
-"Repository" = "https://github.com/pnnbao97/VieNeu-TTS"
 "Bug Tracker" = "https://github.com/pnnbao97/VieNeu-TTS/issues"
 "Documentation" = "https://github.com/pnnbao97/VieNeu-TTS/blob/main/README.md"
 "Source Code" = "https://github.com/pnnbao97/VieNeu-TTS"
@@ -130,21 +105,12 @@ include = ["vieneu*", "vieneu_utils*", "apps*", "examples*"]
 vieneu = ["assets/samples/*"]
 
 [tool.uv.sources]
-
 torch = [
-    { index = "pytorch", marker = "sys_platform != 'darwin'" },
-    { index = "pypi", marker = "sys_platform == 'darwin'" }
+    { index = "pytorch-cpu" }
 ]
 
 torchaudio = [
-    { index = "pytorch", marker = "sys_platform != 'darwin'" },
-    { index = "pypi", marker = "sys_platform == 'darwin'" }
-]
-
-lmdeploy = [
-    { url = "https://github.com/InternLM/lmdeploy/releases/download/v0.11.0/lmdeploy-0.11.0+cu128-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.12'" },
-    { url = "https://github.com/InternLM/lmdeploy/releases/download/v0.11.0/lmdeploy-0.11.0+cu128-cp312-cp312-manylinux2014_x86_64.whl", marker = "sys_platform == 'linux' and python_version == '3.12'" },
-    { index = "pypi", marker = "sys_platform == 'darwin'" }
+    { index = "pytorch-cpu" }
 ]
 
 llama-cpp-python = [
