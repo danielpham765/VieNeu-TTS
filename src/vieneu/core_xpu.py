@@ -6,7 +6,6 @@ from typing import Optional, Union, List
 from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import logging
-from neucodec import NeuCodec, DistillNeuCodec
 from .standard import VieNeuTTS
 from vieneu_utils.phonemize_text import phonemize_batch
 
@@ -71,6 +70,15 @@ class XPUVieNeuTTS(VieNeuTTS):
         if not hasattr(torch, 'xpu') or not torch.xpu.is_available():
             raise RuntimeError("XPU device requested but torch.xpu.is_available() returned False")
         
+        try:
+            from neucodec import NeuCodec, DistillNeuCodec
+        except ImportError as e:
+            raise ImportError(
+                "Failed to import neucodec for XPU mode. "
+                "Please install compatible versions of torch/torchvision/torchaudio. "
+                "Recommended: torch>=2.7.1,<2.9, torchvision>=0.22.1,<0.25, torchaudio>=2.7.1,<2.9"
+            ) from e
+
         match codec_repo:
             case "neuphonic/neucodec":
                 self.codec = NeuCodec.from_pretrained(codec_repo)
