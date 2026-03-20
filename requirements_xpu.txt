@@ -138,12 +138,12 @@ threadpoolctl==3.6.0
 tiktoken==0.12.0
 tokenizers==0.22.1
 tomlkit==0.13.3
-torch
+torch>=2.7.1,<2.9
 torchao==0.14.1
-torchaudio
+torchaudio>=2.7.1,<2.9
 torchdata==0.11.0
 torchtune==0.6.1
-torchvision
+torchvision>=0.22.1,<0.25
 tqdm==4.67.1
 transformers==4.57.1
 typer==0.20.0
