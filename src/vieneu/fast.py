@@ -9,7 +9,6 @@ from .base import BaseVieneuTTS
 from .utils import _compile_codec_with_triton, extract_speech_ids, _linear_overlap_add
 from vieneu_utils.phonemize_text import phonemize_with_dict, phonemize_batch
 from vieneu_utils.core_utils import split_text_into_chunks, join_audio_chunks
-from neucodec import NeuCodec, DistillNeuCodec
 
 logger = logging.getLogger("Vieneu.Fast")
 
@@ -87,6 +86,16 @@ class FastVieNeuTTS(BaseVieneuTTS):
 
     def _load_codec(self, codec_repo, codec_device, enable_triton):
         logger.info(f"Loading codec from: {codec_repo} on {codec_device}")
+
+        try:
+            from neucodec import NeuCodec, DistillNeuCodec
+        except ImportError as e:
+            raise ImportError(
+                "Failed to import neucodec. "
+                "Please install compatible versions of torch/torchvision/torchaudio. "
+                "Recommended: torch>=2.7.1,<2.9, torchvision>=0.22.1,<0.25, torchaudio>=2.7.1,<2.9"
+            ) from e
+
         match codec_repo:
             case "neuphonic/neucodec":
                 self.codec = NeuCodec.from_pretrained(codec_repo)
