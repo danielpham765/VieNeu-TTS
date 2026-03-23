@@ -1,5 +1,18 @@
 import gradio as gr
-print("⏳ Đang khởi động VieNeu-TTS... Vui lòng chờ...")
+import os
+from pathlib import Path
+
+# Suppress PyTorch warnings for cleaner output
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="neucodec")
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+
+print("⏳ Đang khởi động VieNeu-TTS...")
+
+# Create output directory on startup
+OUTPUT_DIR = "output_audio"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+print(f"📁 Output folder: {os.path.abspath(OUTPUT_DIR)}")
 import soundfile as sf
 import tempfile
 from vieneu import Vieneu
@@ -95,6 +108,63 @@ _text_normalizer = Normalizer()
 
 # Cache for reference texts
 _ref_text_cache = {}
+
+
+def delete_output_audio_file(file_path: str) -> str:
+    """Delete a generated audio file after a client downloads it."""
+    raw = str(file_path or "").strip()
+    if not raw:
+        raise ValueError("Thiếu đường dẫn file cần xóa.")
+
+    output_root = Path(OUTPUT_DIR).resolve()
+    gradio_tmp_root = Path("/tmp/gradio").resolve()
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = output_root / candidate
+
+    try:
+        resolved = candidate.resolve(strict=False)
+    except Exception:
+        resolved = candidate
+
+    if resolved.suffix.lower() != ".wav":
+        raise ValueError("Chỉ hỗ trợ xóa file .wav.")
+
+    if not (
+        resolved.name.startswith("tts_output_")
+        or resolved.name.startswith("tts_stream_")
+    ):
+        raise ValueError("Tên file không thuộc nhóm audio sinh tự động.")
+
+    inside_output_audio = False
+    inside_gradio_tmp = False
+
+    try:
+        resolved.relative_to(output_root)
+        inside_output_audio = True
+    except ValueError:
+        pass
+
+    try:
+        resolved.relative_to(gradio_tmp_root)
+        inside_gradio_tmp = True
+    except ValueError:
+        pass
+
+    if not inside_output_audio and not inside_gradio_tmp:
+        raise ValueError("Chỉ được phép xóa file trong output_audio hoặc /tmp/gradio.")
+
+    if inside_output_audio and resolved.parent != output_root:
+        raise ValueError("Chỉ được phép xóa file trực tiếp trong output_audio.")
+
+    if inside_gradio_tmp and resolved.parent.parent != gradio_tmp_root:
+        raise ValueError("Chỉ được phép xóa file trong thư mục con trực tiếp của /tmp/gradio.")
+
+    if not resolved.exists():
+        return f"⚠️ File không tồn tại: {resolved}"
+
+    resolved.unlink()
+    return f"✅ Đã xóa file: {resolved}"
 
 def get_available_devices() -> list[str]:
     """Get list of available devices for current platform."""
@@ -1449,6 +1519,9 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                     max_lines=10,
                     show_copy_button=True
                 )
+                cleanup_path_input = gr.Textbox(visible=False)
+                cleanup_status_output = gr.Textbox(visible=False)
+                cleanup_button = gr.Button("cleanup_output_audio", visible=False)
                 gr.Markdown("<div style='text-align: center; color: #64748b; font-size: 0.8rem;'>🔒 Audio được đóng dấu bản quyền ẩn (Watermarker) để bảo mật và định danh AI.</div>")
         
         # # --- EVENT HANDLERS ---
@@ -1591,11 +1664,17 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
         btn_stop.click(lambda: (None, "⏹️ Đã dừng tạo giọng nói."), outputs=[audio_output, status_output])
         btn_stop.click(lambda: gr.update(interactive=False), outputs=btn_stop)
 
-        # Persistence: Restore UI state on load
-        demo.load(
-            fn=restore_ui_state,
-            outputs=[model_status, btn_generate, btn_stop]
+        cleanup_button.click(
+            fn=delete_output_audio_file,
+            inputs=[cleanup_path_input],
+            outputs=[cleanup_status_output],
+            api_name="delete_output_audio",
+            api_description="Delete a generated .wav file in output_audio after the client has downloaded it.",
+            queue=False,
+            show_api=True,
         )
+
+        demo.load(fn=restore_ui_state, outputs=[model_status, btn_generate, btn_stop])
 
 def main():
     # Cho phép override từ biến môi trường (hữu ích cho Docker)
@@ -1614,6 +1693,9 @@ def main():
     if server_name == "0.0.0.0" and os.getenv("GRADIO_SHARE") is None:
         share = False
 
+    print(f"🚀 Launching app on http://{server_name}:{server_port}")
+    print("📡 API is automatically enabled")
+    print("📋 API endpoints: /api/predict, /api/load_model, /api/synthesize_speech, /api/delete_output_audio")
     demo.queue().launch(server_name=server_name, server_port=server_port, share=share)
 
 if __name__ == "__main__":
