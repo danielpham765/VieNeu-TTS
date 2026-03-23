@@ -1,6 +1,7 @@
 import gradio as gr
 import os
 from pathlib import Path
+from urllib.parse import unquote
 
 # Suppress PyTorch warnings for cleaner output
 import warnings
@@ -114,7 +115,10 @@ def delete_output_audio_file(file_path: str) -> str:
     """Delete a generated audio file after a client downloads it."""
     raw = str(file_path or "").strip()
     if not raw:
-        raise ValueError("Thiếu đường dẫn file cần xóa.")
+        return "⚠️ Thiếu đường dẫn file cần xóa."
+
+    if "file=" in raw:
+        raw = unquote(raw.split("file=", 1)[1]).strip()
 
     output_root = Path(OUTPUT_DIR).resolve()
     gradio_tmp_root = Path("/tmp/gradio").resolve()
@@ -128,13 +132,13 @@ def delete_output_audio_file(file_path: str) -> str:
         resolved = candidate
 
     if resolved.suffix.lower() != ".wav":
-        raise ValueError("Chỉ hỗ trợ xóa file .wav.")
+        return f"⚠️ Bỏ qua file không phải .wav: {resolved}"
 
     if not (
         resolved.name.startswith("tts_output_")
         or resolved.name.startswith("tts_stream_")
     ):
-        raise ValueError("Tên file không thuộc nhóm audio sinh tự động.")
+        return f"⚠️ Bỏ qua file không thuộc nhóm sinh tự động: {resolved.name}"
 
     inside_output_audio = False
     inside_gradio_tmp = False
@@ -152,13 +156,13 @@ def delete_output_audio_file(file_path: str) -> str:
         pass
 
     if not inside_output_audio and not inside_gradio_tmp:
-        raise ValueError("Chỉ được phép xóa file trong output_audio hoặc /tmp/gradio.")
+        return f"⚠️ Bỏ qua đường dẫn ngoài vùng cho phép: {resolved}"
 
     if inside_output_audio and resolved.parent != output_root:
-        raise ValueError("Chỉ được phép xóa file trực tiếp trong output_audio.")
+        return f"⚠️ Bỏ qua file không nằm trực tiếp trong output_audio: {resolved}"
 
     if inside_gradio_tmp and resolved.parent.parent != gradio_tmp_root:
-        raise ValueError("Chỉ được phép xóa file trong thư mục con trực tiếp của /tmp/gradio.")
+        return f"⚠️ Bỏ qua file không nằm trong thư mục con trực tiếp của /tmp/gradio: {resolved}"
 
     if not resolved.exists():
         return f"⚠️ File không tồn tại: {resolved}"
