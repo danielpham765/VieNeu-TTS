@@ -111,64 +111,88 @@ _text_normalizer = Normalizer()
 _ref_text_cache = {}
 
 
-def delete_output_audio_file(file_path: str) -> str:
-    """Delete a generated audio file after a client downloads it."""
-    raw = str(file_path or "").strip()
+def _get_gradio_tmp_root() -> Path:
+    configured = os.getenv("GRADIO_TEMP_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path(tempfile.gettempdir()) / "gradio").resolve()
+
+
+def _parse_cleanup_token(file_name: str) -> tuple[str, str | None] | None:
+    raw = str(file_name or "").strip()
     if not raw:
-        return "⚠️ Thiếu đường dẫn file cần xóa."
+        return None
 
     if "file=" in raw:
         raw = unquote(raw.split("file=", 1)[1]).strip()
 
-    output_root = Path(OUTPUT_DIR).resolve()
-    gradio_tmp_root = Path("/tmp/gradio").resolve()
-    candidate = Path(raw)
-    if not candidate.is_absolute():
-        candidate = output_root / candidate
+    normalized = raw.replace("\\", "/").strip("/")
+    if not normalized:
+        return None
 
-    try:
-        resolved = candidate.resolve(strict=False)
-    except Exception:
-        resolved = candidate
+    parts = [part for part in normalized.split("/") if part and part not in {".", ".."}]
+    if not parts:
+        return None
 
-    if resolved.suffix.lower() != ".wav":
-        return f"⚠️ Bỏ qua file không phải .wav: {resolved}"
+    if "gradio" in parts:
+        gradio_index = parts.index("gradio")
+        parts = parts[gradio_index + 1 :]
+    elif "output_audio" in parts:
+        output_index = parts.index("output_audio")
+        parts = parts[output_index + 1 :]
 
-    if not (
-        resolved.name.startswith("tts_output_")
-        or resolved.name.startswith("tts_stream_")
-    ):
-        return f"⚠️ Bỏ qua file không thuộc nhóm sinh tự động: {resolved.name}"
+    if not parts:
+        return None
 
-    inside_output_audio = False
-    inside_gradio_tmp = False
+    filename = parts[-1]
+    if not filename.lower().endswith(".wav"):
+        return None
+    if not (filename.startswith("tts_output_") or filename.startswith("tts_stream_")):
+        return None
 
-    try:
-        resolved.relative_to(output_root)
-        inside_output_audio = True
-    except ValueError:
-        pass
+    tmp_subdir = parts[-2] if len(parts) >= 2 else None
+    if tmp_subdir in {"output_audio", "gradio"}:
+        tmp_subdir = None
+    return filename, tmp_subdir
 
-    try:
-        resolved.relative_to(gradio_tmp_root)
-        inside_gradio_tmp = True
-    except ValueError:
-        pass
 
-    if not inside_output_audio and not inside_gradio_tmp:
-        return f"⚠️ Bỏ qua đường dẫn ngoài vùng cho phép: {resolved}"
+def delete_output_audio_file(file_name: str) -> str:
+    """Delete generated audio artifacts after a client downloads them."""
+    parsed = _parse_cleanup_token(file_name)
+    if parsed is None:
+        return "⚠️ Thiếu hoặc sai fileName cần xóa."
 
-    if inside_output_audio and resolved.parent != output_root:
-        return f"⚠️ Bỏ qua file không nằm trực tiếp trong output_audio: {resolved}"
+    filename, tmp_subdir = parsed
+    output_path = (Path(OUTPUT_DIR).resolve() / filename)
 
-    if inside_gradio_tmp and resolved.parent.parent != gradio_tmp_root:
-        return f"⚠️ Bỏ qua file không nằm trong thư mục con trực tiếp của /tmp/gradio: {resolved}"
+    deleted_paths: list[str] = []
+    missing_paths: list[str] = []
 
-    if not resolved.exists():
-        return f"⚠️ File không tồn tại: {resolved}"
+    if output_path.exists():
+        output_path.unlink()
+        deleted_paths.append(str(output_path))
+    else:
+        missing_paths.append(str(output_path))
 
-    resolved.unlink()
-    return f"✅ Đã xóa file: {resolved}"
+    if tmp_subdir:
+        tmp_path = _get_gradio_tmp_root() / tmp_subdir / filename
+        try:
+            tmp_path = tmp_path.resolve(strict=False)
+        except Exception:
+            pass
+        if tmp_path.exists():
+            tmp_path.unlink()
+            deleted_paths.append(str(tmp_path))
+        else:
+            missing_paths.append(str(tmp_path))
+
+    if deleted_paths:
+        details = " | ".join(deleted_paths)
+        if missing_paths:
+            return f"✅ Đã xóa: {details} | ⚠️ Không tìm thấy: {' | '.join(missing_paths)}"
+        return f"✅ Đã xóa: {details}"
+
+    return f"⚠️ Không tìm thấy file cần xóa: {' | '.join(missing_paths)}"
 
 def get_available_devices() -> list[str]:
     """Get list of available devices for current platform."""
@@ -1673,7 +1697,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             inputs=[cleanup_path_input],
             outputs=[cleanup_status_output],
             api_name="delete_output_audio",
-            api_description="Delete a generated .wav file in output_audio after the client has downloaded it.",
+            api_description="Delete downloaded server-side .wav artifacts by fileName from output_audio and the configured Gradio temp folder.",
             queue=False,
             show_api=True,
         )
