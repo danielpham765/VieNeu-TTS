@@ -1,6 +1,16 @@
 import os
 import sys
 import subprocess
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CACHE_DIR = (PROJECT_ROOT / ".cache").resolve()
+GRADIO_CACHE_DIR = (CACHE_DIR / "gradio").resolve()
+OUTPUT_DIR = (CACHE_DIR / "audio_output").resolve()
+
+os.environ["GRADIO_TEMP_DIR"] = str(GRADIO_CACHE_DIR)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+GRADIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Add XPU dll path ---
 intel_dll_path = os.path.join(sys.prefix, 'Library', 'bin')
@@ -13,7 +23,6 @@ else:
 import torch
 import gradio as gr
 import soundfile as sf
-import tempfile
 import time
 import numpy as np
 import queue
@@ -44,9 +53,8 @@ except ImportError:
 print("⏳ Đang khởi động VieNeu-TTS (Phiên bản tối ưu cho Intel XPU)...")
 
 # Create output directory on startup
-OUTPUT_DIR = "output_audio"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-print(f"📁 Output folder: {os.path.abspath(OUTPUT_DIR)}")
+print(f"📁 Output folder: {OUTPUT_DIR}")
+print(f"📁 Gradio temp folder: {GRADIO_CACHE_DIR}")
 
 
 # --- CONSTANTS & CONFIG ---
@@ -451,25 +459,22 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
 
                 from datetime import datetime
 
-                output_dir = OUTPUT_DIR
-                os.makedirs(output_dir, exist_ok=True)
-
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = os.path.join(output_dir, f"tts_output_{timestamp}.wav")
+                output_path = OUTPUT_DIR / f"tts_output_{timestamp}.wav"
                 sf.write(output_path, final_wav, sr)
 
-                if os.path.exists(output_path):
-                    file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                if output_path.exists():
+                    file_size_mb = output_path.stat().st_size / (1024 * 1024)
                     print(f"✅ File saved successfully: {output_path} ({file_size_mb:.2f} MB)")
                 else:
                     print(f"⚠️ WARNING: File not found after write: {output_path}")
 
-                abs_output_path = os.path.abspath(output_path)
+                abs_output_path = str(output_path)
 
                 process_time = time.time() - start_time
                 speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
 
-                yield output_path, f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}) (Backend: Intel XPU)\n📁 File đã lưu tại: {abs_output_path}"
+                yield str(output_path), f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}) (Backend: Intel XPU)\n📁 File đã lưu tại: {abs_output_path}"
                 cleanup_gpu_memory()
                 return
 
@@ -509,31 +514,26 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             #     sf.write(tmp.name, final_wav, sr)
             #     output_path = tmp.name
     
-            # NEW - Save to specific folder:
-            import os
             from datetime import datetime
     
-            output_dir = "output_audio"  # Or any path you want
-            os.makedirs(output_dir, exist_ok=True)
-    
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_path = os.path.join(output_dir, f"tts_output_{timestamp}.wav")
+            output_path = OUTPUT_DIR / f"tts_output_{timestamp}.wav"
             sf.write(output_path, final_wav, sr)
             
             # Verify file was written
-            if os.path.exists(output_path):
-                file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+            if output_path.exists():
+                file_size_mb = output_path.stat().st_size / (1024 * 1024)
                 print(f"✅ File saved successfully: {output_path} ({file_size_mb:.2f} MB)")
             else:
                 print(f"⚠️ WARNING: File not found after write: {output_path}")
             
             # Get absolute path for user clarity
-            abs_output_path = os.path.abspath(output_path)
+            abs_output_path = str(output_path)
             
             process_time = time.time() - start_time
             speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
             
-            yield output_path, f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}) (Backend: Intel XPU)\n📁 File đã lưu tại: {abs_output_path}"
+            yield str(output_path), f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}) (Backend: Intel XPU)\n📁 File đã lưu tại: {abs_output_path}"
             cleanup_gpu_memory()
             
         except Exception as e:
@@ -656,17 +656,14 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             # Save to permanent location instead of temp
             from datetime import datetime
             
-            output_dir = "output_audio"
-            os.makedirs(output_dir, exist_ok=True)
-            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_path = os.path.join(output_dir, f"tts_stream_{timestamp}.wav")
+            output_path = OUTPUT_DIR / f"tts_stream_{timestamp}.wav"
             sf.write(output_path, final_wav, sr)
             
             # Get absolute path for user clarity
-            abs_output_path = os.path.abspath(output_path)
+            abs_output_path = str(output_path)
             
-            yield output_path, f"✅ Hoàn tất Streaming! (Intel XPU)\n📁 File đã lưu tại: {abs_output_path}"
+            yield str(output_path), f"✅ Hoàn tất Streaming! (Intel XPU)\n📁 File đã lưu tại: {abs_output_path}"
             
             cleanup_gpu_memory()
 
