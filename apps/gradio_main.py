@@ -11,8 +11,9 @@ print("⏳ Đang khởi động VieNeu-TTS...")
 
 # Create output directory on startup
 OUTPUT_DIR = "output_audio"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-print(f"📁 Output folder: {os.path.abspath(OUTPUT_DIR)}")
+OUTPUT_DIR_ABS = str(Path(OUTPUT_DIR).resolve())
+os.makedirs(OUTPUT_DIR_ABS, exist_ok=True)
+print(f"📁 Output folder: {OUTPUT_DIR_ABS}")
 
 import soundfile as sf
 import tempfile
@@ -69,8 +70,7 @@ def delete_output_audio_file(file_path: str) -> str:
     if not raw:
         raise ValueError("Thiếu đường dẫn file cần xóa.")
 
-    output_root = Path(OUTPUT_DIR).resolve()
-    gradio_tmp_root = Path("/tmp/gradio").resolve()
+    output_root = Path(OUTPUT_DIR_ABS)
     candidate = Path(raw)
     if not candidate.is_absolute():
         candidate = output_root / candidate
@@ -90,28 +90,17 @@ def delete_output_audio_file(file_path: str) -> str:
         raise ValueError("Tên file không thuộc nhóm audio sinh tự động.")
 
     inside_output_audio = False
-    inside_gradio_tmp = False
-
     try:
         resolved.relative_to(output_root)
         inside_output_audio = True
     except ValueError:
         pass
 
-    try:
-        resolved.relative_to(gradio_tmp_root)
-        inside_gradio_tmp = True
-    except ValueError:
-        pass
-
-    if not inside_output_audio and not inside_gradio_tmp:
-        raise ValueError("Chỉ được phép xóa file trong output_audio hoặc /tmp/gradio.")
+    if not inside_output_audio:
+        raise ValueError("Chỉ được phép xóa file trong output_audio.")
 
     if inside_output_audio and resolved.parent != output_root:
         raise ValueError("Chỉ được phép xóa file trực tiếp trong output_audio.")
-
-    if inside_gradio_tmp and resolved.parent.parent != gradio_tmp_root:
-        raise ValueError("Chỉ được phép xóa file trong thư mục con trực tiếp của /tmp/gradio.")
 
     if not resolved.exists():
         return f"⚠️ File không tồn tại: {resolved}"
@@ -820,7 +809,7 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             # Save to specific folder
             from datetime import datetime
             
-            output_dir = "output_audio"
+            output_dir = OUTPUT_DIR_ABS
             os.makedirs(output_dir, exist_ok=True)
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -978,7 +967,7 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             # Save to specific folder
             from datetime import datetime
             
-            output_dir = "output_audio"
+            output_dir = OUTPUT_DIR_ABS
             os.makedirs(output_dir, exist_ok=True)
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1264,7 +1253,12 @@ def main():
     print("📡 API is automatically enabled")
     print("📋 API endpoints: /api/predict, /api/load_model, /api/synthesize_speech, /api/delete_output_audio")
 
-    demo.queue().launch(server_name=server_name, server_port=server_port, share=share)
+    demo.queue().launch(
+        server_name=server_name,
+        server_port=server_port,
+        share=share,
+        allowed_paths=[OUTPUT_DIR_ABS],
+    )
 
 if __name__ == "__main__":
     main()

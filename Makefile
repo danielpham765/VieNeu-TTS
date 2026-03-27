@@ -5,7 +5,8 @@ SHELL := /bin/bash
 help:
 	@echo "Targets:"
 	@echo "  make check       - check toolchain (python>=3.12, uv, espeak, docker, gpu, .env...)"
-	@echo "  make setup      - setup environment (uv sync)"
+	@echo "  make setup       - setup environment with Linux CUDA wheels when available"
+	@echo "  make setup-gpu   - alias for setup; intended for Linux/NVIDIA CUDA"
 	@echo "  make run        - run Gradio UI (alias for 'make demo')"
 	@echo "  make stream     - run Web Stream UI (CPU GGUF)"
 	@echo "  make docker-gpu - run docker compose --profile gpu (auto-create .env if needed)"

@@ -94,6 +94,7 @@ VieNeu-TTS delivers production-ready speech synthesis fully offline.
     ```bash
     uv sync
     ```
+    On Linux, the default project now resolves PyTorch from the CUDA 12.8 wheel index so `uv run gradio_app.py` can use NVIDIA GPUs when the NVIDIA driver stack is installed and `torch.cuda.is_available()` returns `True`.
 
     **Option 2: CPU-ONLY (Lightweight, no CUDA)**
     ```bash
@@ -111,9 +112,15 @@ VieNeu-TTS delivers production-ready speech synthesis fully offline.
 3. **Start the Web UI:**
 
 ```bash
-   uv run vieneu-web
+   uv run gradio_app.py
    ```
    Access the UI at `http://127.0.0.1:7860`.
+
+### Linux NVIDIA Notes
+- `uv sync` expects a working NVIDIA driver on the host. Verify with `nvidia-smi`.
+- Recommended driver level: `>= 570.65` for CUDA 12.8 wheels.
+- For highest throughput in the UI, select a GPU backbone such as `VieNeu-TTS (GPU)` or `VieNeu-TTS-0.3B (GPU)`, keep `Device = Auto` or `CUDA`, and enable `LMDeploy`.
+- If `nvidia-smi` is missing or `torch.cuda.is_available()` is `False`, the app will fall back to CPU paths even if CUDA wheels are installed.
 
 ### ⚡ Real-time Streaming (CPU Optimized)
 VieNeu-TTS supports **ultra-low latency streaming**, allowing audio playback to start before the entire sentence is finished. This is specifically optimized for **CPU-only** devices using the GGUF backend.

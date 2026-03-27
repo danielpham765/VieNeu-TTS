@@ -19,6 +19,34 @@ if os.path.exists(ENV_PATH):
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(ROOT_DIR, "src")
 
+
+def _ensure_writable_cache_env() -> None:
+    cache_root = os.path.join(ROOT_DIR, ".cache")
+    hf_root = os.path.join(cache_root, "huggingface")
+    hub_root = os.path.join(hf_root, "hub")
+    transformers_root = os.path.join(cache_root, "transformers")
+
+    for path in (cache_root, hf_root, hub_root, transformers_root):
+        os.makedirs(path, exist_ok=True)
+
+    env_updates = {
+        "XDG_CACHE_HOME": cache_root,
+        "HF_HOME": hf_root,
+        "HUGGINGFACE_HUB_CACHE": hub_root,
+        "TRANSFORMERS_CACHE": transformers_root,
+    }
+
+    for key, target in env_updates.items():
+        current = os.environ.get(key)
+        if not current:
+            os.environ[key] = target
+            continue
+        if not os.access(current, os.W_OK):
+            os.environ[key] = target
+
+
+_ensure_writable_cache_env()
+
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 

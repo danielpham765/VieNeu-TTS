@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+from pathlib import Path
 
 # --- Add XPU dll path ---
 intel_dll_path = os.path.join(sys.prefix, 'Library', 'bin')
@@ -45,8 +46,9 @@ print("⏳ Đang khởi động VieNeu-TTS (Phiên bản tối ưu cho Intel XPU
 
 # Create output directory on startup
 OUTPUT_DIR = "output_audio"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-print(f"📁 Output folder: {os.path.abspath(OUTPUT_DIR)}")
+OUTPUT_DIR_ABS = str(Path(OUTPUT_DIR).resolve())
+os.makedirs(OUTPUT_DIR_ABS, exist_ok=True)
+print(f"📁 Output folder: {OUTPUT_DIR_ABS}")
 
 
 # --- CONSTANTS & CONFIG ---
@@ -451,7 +453,7 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
 
                 from datetime import datetime
 
-                output_dir = OUTPUT_DIR
+                output_dir = OUTPUT_DIR_ABS
                 os.makedirs(output_dir, exist_ok=True)
 
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -513,7 +515,7 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             import os
             from datetime import datetime
     
-            output_dir = "output_audio"  # Or any path you want
+            output_dir = OUTPUT_DIR_ABS
             os.makedirs(output_dir, exist_ok=True)
     
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -656,7 +658,7 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             # Save to permanent location instead of temp
             from datetime import datetime
             
-            output_dir = "output_audio"
+            output_dir = OUTPUT_DIR_ABS
             os.makedirs(output_dir, exist_ok=True)
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1047,7 +1049,12 @@ def main():
     print("📡 API is automatically enabled")
     print("📋 API endpoints: /api/predict, /api/load_model, /api/synthesize_speech")
 
-    demo.queue().launch(server_name=server_name, server_port=server_port, share=share)
+    demo.queue().launch(
+        server_name=server_name,
+        server_port=server_port,
+        share=share,
+        allowed_paths=[OUTPUT_DIR_ABS],
+    )
 
 if __name__ == "__main__":
     main()
