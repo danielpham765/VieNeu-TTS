@@ -1,7 +1,17 @@
-import gradio as gr
 import os
 from pathlib import Path
 from urllib.parse import unquote
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CACHE_DIR = (PROJECT_ROOT / ".cache").resolve()
+GRADIO_CACHE_DIR = (CACHE_DIR / "gradio").resolve()
+OUTPUT_DIR = (CACHE_DIR / "audio_output").resolve()
+
+os.environ["GRADIO_TEMP_DIR"] = str(GRADIO_CACHE_DIR)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+GRADIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+import gradio as gr
 
 # Suppress PyTorch warnings for cleaner output
 import warnings
@@ -11,13 +21,12 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torch")
 print("⏳ Đang khởi động VieNeu-TTS...")
 
 # Create output directory on startup
-OUTPUT_DIR = "output_audio"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-print(f"📁 Output folder: {os.path.abspath(OUTPUT_DIR)}")
+print(f"📁 Output folder: {OUTPUT_DIR}")
+print(f"📁 Gradio temp folder: {GRADIO_CACHE_DIR}")
+
 import soundfile as sf
-import tempfile
-from vieneu import Vieneu
-import os
+import torch
+from vieneu import Vieneu, VieNeuTTS, FastVieNeuTTS
 import sys
 import time
 import numpy as np
@@ -115,7 +124,7 @@ def _get_gradio_tmp_root() -> Path:
     configured = os.getenv("GRADIO_TEMP_DIR")
     if configured:
         return Path(configured).expanduser().resolve()
-    return (Path(tempfile.gettempdir()) / "gradio").resolve()
+    return GRADIO_CACHE_DIR
 
 
 def _parse_cleanup_token(file_name: str) -> tuple[str, str | None] | None:
@@ -137,8 +146,8 @@ def _parse_cleanup_token(file_name: str) -> tuple[str, str | None] | None:
     if "gradio" in parts:
         gradio_index = parts.index("gradio")
         parts = parts[gradio_index + 1 :]
-    elif "output_audio" in parts:
-        output_index = parts.index("output_audio")
+    elif "audio_output" in parts:
+        output_index = parts.index("audio_output")
         parts = parts[output_index + 1 :]
 
     if not parts:
@@ -151,7 +160,7 @@ def _parse_cleanup_token(file_name: str) -> tuple[str, str | None] | None:
         return None
 
     tmp_subdir = parts[-2] if len(parts) >= 2 else None
-    if tmp_subdir in {"output_audio", "gradio"}:
+    if tmp_subdir in {"audio_output", "gradio"}:
         tmp_subdir = None
     return filename, tmp_subdir
 
@@ -163,7 +172,7 @@ def delete_output_audio_file(file_name: str) -> str:
         return "⚠️ Thiếu hoặc sai fileName cần xóa."
 
     filename, tmp_subdir = parsed
-    output_path = (Path(OUTPUT_DIR).resolve() / filename)
+    output_path = OUTPUT_DIR / filename
 
     deleted_paths: list[str] = []
     missing_paths: list[str] = []
@@ -995,21 +1004,30 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             silence_p = 0.15 if not is_v2_turbo else 0.0 # Turbo adds silence internally
             final_wav = join_audio_chunks(all_wavs, sr=sr, silence_p=silence_p)
             
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                sf.write(tmp.name, final_wav, sr)
-                output_path = tmp.name
+            # Save to specific folder
+            from datetime import datetime
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = OUTPUT_DIR / f"tts_output_{timestamp}.wav"
+            sf.write(output_path, final_wav, sr)
+            
+            # Verify file was written
+            if output_path.exists():
+                file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                print(f"✅ File saved successfully: {output_path} ({file_size_mb:.2f} MB)")
+            else:
+                print(f"⚠️ WARNING: File not found after write: {output_path}")
+            
+            abs_output_path = str(output_path)
             
             process_time = time.time() - start_time
             backend_info = f" (Backend: {'LMDeploy 🚀' if using_lmdeploy else 'Standard 📦'})"
             speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
             
-            
-            yield output_path, f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}){backend_info}"
-            
-            # Cleanup memory
+            yield str(output_path), f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}){backend_info}\n📁 File đã lưu tại: {abs_output_path}"
+
             if using_lmdeploy and hasattr(tts, 'cleanup_memory'):
                 tts.cleanup_memory()
-            
             cleanup_gpu_memory()
             
         except Exception as e:
@@ -1167,12 +1185,17 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
         
         if full_audio_buffer:
             final_wav = np.concatenate(full_audio_buffer)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                sf.write(tmp.name, final_wav, sr)
-                
-                yield tmp.name, f"✅ Hoàn tất Streaming! ({backend_info})"
+            # Save to specific folder
+            from datetime import datetime
             
-            # Cleanup memory
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = OUTPUT_DIR / f"tts_stream_{timestamp}.wav"
+            sf.write(output_path, final_wav, sr)
+            
+            abs_output_path = str(output_path)
+            
+            yield str(output_path), f"✅ Hoàn tất Streaming! ({backend_info})\n📁 File đã lưu tại: {abs_output_path}"
+
             if using_lmdeploy and hasattr(tts, 'cleanup_memory'):
                 tts.cleanup_memory()
             
@@ -1697,7 +1720,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             inputs=[cleanup_path_input],
             outputs=[cleanup_status_output],
             api_name="delete_output_audio",
-            api_description="Delete downloaded server-side .wav artifacts by fileName from output_audio and the configured Gradio temp folder.",
+            api_description="Delete downloaded server-side .wav artifacts by fileName from .cache/audio_output and the configured Gradio temp folder.",
             queue=False,
             show_api=True,
         )

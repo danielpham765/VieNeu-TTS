@@ -22,4 +22,4 @@ merged_models_cache/
 
 # Audio outputs
 output_audio/
-
+.cache/
