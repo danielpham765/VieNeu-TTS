@@ -3,6 +3,10 @@ import sys
 import subprocess
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_GRADIO_TEMP_DIR = PROJECT_ROOT / ".gradio_cache"
+os.environ.setdefault("GRADIO_TEMP_DIR", str(DEFAULT_GRADIO_TEMP_DIR.resolve()))
+
 # --- Add XPU dll path ---
 intel_dll_path = os.path.join(sys.prefix, 'Library', 'bin')
 
@@ -45,10 +49,12 @@ except ImportError:
 print("⏳ Đang khởi động VieNeu-TTS (Phiên bản tối ưu cho Intel XPU)...")
 
 # Create output directory on startup
-OUTPUT_DIR = "output_audio"
-OUTPUT_DIR_ABS = str(Path(OUTPUT_DIR).resolve())
+OUTPUT_DIR_ABS = str((PROJECT_ROOT / "output_audio").resolve())
+GRADIO_TEMP_DIR_ABS = str(Path(os.environ["GRADIO_TEMP_DIR"]).resolve())
 os.makedirs(OUTPUT_DIR_ABS, exist_ok=True)
+os.makedirs(GRADIO_TEMP_DIR_ABS, exist_ok=True)
 print(f"📁 Output folder: {OUTPUT_DIR_ABS}")
+print(f"🗂️ Gradio temp folder: {GRADIO_TEMP_DIR_ABS}")
 
 
 # --- CONSTANTS & CONFIG ---

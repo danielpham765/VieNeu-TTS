@@ -22,4 +22,5 @@ merged_models_cache/
 
 # Audio outputs
 output_audio/
-
+.gradio_cache/
+.cache/

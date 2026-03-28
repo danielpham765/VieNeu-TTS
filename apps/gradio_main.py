@@ -1,6 +1,11 @@
-import gradio as gr
 import os
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_GRADIO_TEMP_DIR = PROJECT_ROOT / ".gradio_cache"
+os.environ.setdefault("GRADIO_TEMP_DIR", str(DEFAULT_GRADIO_TEMP_DIR.resolve()))
+
+import gradio as gr
 
 # Suppress PyTorch warnings for cleaner output
 import warnings
@@ -10,10 +15,12 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torch")
 print("⏳ Đang khởi động VieNeu-TTS...")
 
 # Create output directory on startup
-OUTPUT_DIR = "output_audio"
-OUTPUT_DIR_ABS = str(Path(OUTPUT_DIR).resolve())
+OUTPUT_DIR_ABS = str((PROJECT_ROOT / "output_audio").resolve())
+GRADIO_TEMP_DIR_ABS = str(Path(os.environ["GRADIO_TEMP_DIR"]).resolve())
 os.makedirs(OUTPUT_DIR_ABS, exist_ok=True)
+os.makedirs(GRADIO_TEMP_DIR_ABS, exist_ok=True)
 print(f"📁 Output folder: {OUTPUT_DIR_ABS}")
+print(f"🗂️ Gradio temp folder: {GRADIO_TEMP_DIR_ABS}")
 
 import soundfile as sf
 import tempfile
