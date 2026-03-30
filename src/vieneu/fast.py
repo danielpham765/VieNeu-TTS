@@ -65,13 +65,13 @@ class FastVieNeuTTS(BaseVieneuTTS):
             os.environ["HF_TOKEN"] = hf_token
 
         try:
-            from lmdeploy import pipeline, TurbomindEngineConfig, GenerationConfig
+            from lmdeploy import pipeline, PytorchEngineConfig, GenerationConfig
         except ImportError as e:
             raise ImportError(
                 "Failed to import `lmdeploy`. Install with: pip install vieneu[gpu]"
             ) from e
 
-        backend_config = TurbomindEngineConfig(
+        backend_config = PytorchEngineConfig(
             cache_max_entry_count=memory_util,
             tp=tp,
             enable_prefix_caching=enable_prefix_caching,
