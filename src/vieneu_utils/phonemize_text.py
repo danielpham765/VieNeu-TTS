@@ -5,9 +5,15 @@ which provides a unified, tested, and maintained Vietnamese G2P pipeline.
 """
 import functools
 import logging
+import re
 from sea_g2p import SEAPipeline, G2P, Normalizer
 
 logger = logging.getLogger("Vieneu.Phonemizer")
+
+# sea-g2p 0.6.8 uses fancy-regex patterns with .unwrap() in Rust; very long
+# inputs trigger BacktrackLimitExceeded panics that crash the process.
+# Pre-splitting into short sentences keeps each chunk well below the limit.
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?\n])\s+')
 
 # ---------------------------------------------------------------------------
 # Shared singletons (instantiation is lazy-safe and thread-safe via GIL)
@@ -38,10 +44,28 @@ def _get_normalizer() -> Normalizer:
 # Public API  (same signatures as before — callers don't need to change)
 # ---------------------------------------------------------------------------
 
+def _split_sentences(text: str, max_len: int = 500) -> list[str]:
+    """Split text into sentence-sized chunks to avoid regex backtrack limits."""
+    parts = _SENTENCE_SPLIT_RE.split(text.strip())
+    chunks = []
+    for part in parts:
+        # Hard-split any part that is still too long (e.g. no sentence markers).
+        while len(part) > max_len:
+            chunks.append(part[:max_len])
+            part = part[max_len:]
+        if part:
+            chunks.append(part)
+    return chunks or [text]
+
+
 @functools.lru_cache(maxsize=1024)
 def _phonemize_cached(text: str) -> str:
     """Cached single-text phonemization (normalize + G2P)."""
-    return _get_pipeline().run(text)
+    pipeline = _get_pipeline()
+    chunks = _split_sentences(text)
+    if len(chunks) == 1:
+        return pipeline.run(chunks[0])
+    return " ".join(pipeline.run(c) for c in chunks)
 
 
 def phonemize_text(text: str) -> str:
@@ -74,9 +98,17 @@ def phonemize_batch(
         # Texts are pre-normalized — only run the G2P layer
         return g2p.phonemize_batch(texts, phoneme_dict=phoneme_dict)
     else:
-        # Full pipeline: normalize then G2P
+        # Full pipeline: normalize then G2P.
+        # Normalize sentence-by-sentence to avoid fancy-regex backtrack panics
+        # in sea-g2p's Rust core (BacktrackLimitExceeded on long inputs).
         normalizer = _get_normalizer()
-        normalized = [normalizer.normalize(t) for t in texts]
+        normalized = []
+        for t in texts:
+            chunks = _split_sentences(t)
+            if len(chunks) == 1:
+                normalized.append(normalizer.normalize(chunks[0]))
+            else:
+                normalized.append(" ".join(normalizer.normalize(c) for c in chunks))
         return g2p.phonemize_batch(normalized, phoneme_dict=phoneme_dict)
 
 
