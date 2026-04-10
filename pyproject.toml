@@ -45,6 +45,8 @@ requires-python = ">=3.10"
 dependencies = [
     "sea-g2p>=0.7.5",
     "onnxruntime>=1.20.0",
+    "torch>=2.7.1,<2.9",
+    "torchaudio>=2.7.1,<2.9",
     "llama-cpp-python==0.3.16",
     "requests",
     "numpy",
