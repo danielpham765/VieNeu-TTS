@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import gc
 import logging
+import inspect
 from collections import defaultdict
 from .base import BaseVieneuTTS
 from .utils import _compile_codec_with_triton, extract_speech_ids, _linear_overlap_add
@@ -65,24 +66,59 @@ class FastVieNeuTTS(BaseVieneuTTS):
             os.environ["HF_TOKEN"] = hf_token
 
         try:
-            from lmdeploy import pipeline, PytorchEngineConfig, GenerationConfig
+            from lmdeploy import pipeline, TurbomindEngineConfig, PytorchEngineConfig, GenerationConfig
         except ImportError as e:
             raise ImportError(
                 "Failed to import `lmdeploy`. Install with: pip install vieneu[gpu]"
             ) from e
 
-        backend_config = PytorchEngineConfig(
+        engine_config_cls = TurbomindEngineConfig
+        engine_name = "TurboMind"
+        if not self._lmdeploy_turbomind_supported():
+            engine_config_cls = PytorchEngineConfig
+            engine_name = "PyTorch"
+
+        backend_config = engine_config_cls(
             cache_max_entry_count=memory_util,
             tp=tp,
             enable_prefix_caching=enable_prefix_caching,
             dtype='bfloat16',
             quant_policy=quant_policy
         )
+        logger.info(f"Using LMDeploy {engine_name} engine")
         self.backbone = pipeline(repo, backend_config=backend_config)
         self.gen_config = GenerationConfig(
             top_p=0.95, top_k=50, temperature=1.0, max_new_tokens=2048,
             do_sample=True, min_new_tokens=40,
         )
+
+    def _lmdeploy_turbomind_supported(self) -> bool:
+        if not torch.cuda.is_available():
+            return False
+
+        major, minor = torch.cuda.get_device_capability()
+        if (major, minor) < (12, 0):
+            return True
+
+        try:
+            import lmdeploy
+            lmdeploy_root = Path(inspect.getfile(lmdeploy)).resolve().parent
+            turbomind_lib = next(lmdeploy_root.joinpath("lib").glob("_turbomind*.so"), None)
+            if turbomind_lib is None:
+                logger.warning("LMDeploy TurboMind library not found; falling back to PyTorch engine")
+                return False
+
+            if b"sm_120" in turbomind_lib.read_bytes():
+                return True
+
+            logger.warning(
+                "Installed LMDeploy TurboMind binary lacks sm_120 support; "
+                "falling back to PyTorch engine for Blackwell"
+            )
+            return False
+        except Exception as e:
+            logger.warning(f"Failed to inspect LMDeploy TurboMind binary: {e}; falling back to PyTorch engine")
+            return False
 
     def _load_codec(self, codec_repo, codec_device, enable_triton):
         logger.info(f"Loading codec from: {codec_repo} on {codec_device}")
