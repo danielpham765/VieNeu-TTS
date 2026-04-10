@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shutil
 from urllib.parse import unquote
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -184,7 +185,9 @@ def delete_output_audio_file(file_name: str) -> str:
         missing_paths.append(str(output_path))
 
     if tmp_subdir:
-        tmp_path = _get_gradio_tmp_root() / tmp_subdir / filename
+        gradio_tmp_root = _get_gradio_tmp_root()
+        tmp_dir = gradio_tmp_root / tmp_subdir
+        tmp_path = tmp_dir / filename
         try:
             tmp_path = tmp_path.resolve(strict=False)
         except Exception:
@@ -194,6 +197,17 @@ def delete_output_audio_file(file_name: str) -> str:
             deleted_paths.append(str(tmp_path))
         else:
             missing_paths.append(str(tmp_path))
+
+        try:
+            tmp_dir = tmp_dir.resolve(strict=False)
+        except Exception:
+            pass
+        if tmp_dir != gradio_tmp_root and gradio_tmp_root in tmp_dir.parents:
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
+                deleted_paths.append(str(tmp_dir))
+            else:
+                missing_paths.append(str(tmp_dir))
 
     if deleted_paths:
         details = " | ".join(deleted_paths)
