@@ -2,11 +2,16 @@ import os
 from pathlib import Path
 import shutil
 from urllib.parse import unquote
+import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SRC_DIR = (PROJECT_ROOT / "src").resolve()
 CACHE_DIR = (PROJECT_ROOT / ".cache").resolve()
 GRADIO_CACHE_DIR = (CACHE_DIR / "gradio").resolve()
 OUTPUT_DIR = (CACHE_DIR / "audio_output").resolve()
+
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 os.environ["GRADIO_TEMP_DIR"] = str(GRADIO_CACHE_DIR)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -28,12 +33,13 @@ print(f"📁 Gradio temp folder: {GRADIO_CACHE_DIR}")
 import soundfile as sf
 import torch
 from vieneu import Vieneu, VieNeuTTS, FastVieNeuTTS
-import sys
 import time
 import numpy as np
 import queue
 import threading
 import yaml
+import importlib.util
+import importlib.metadata
 from vieneu_utils.core_utils import split_text_into_chunks, join_audio_chunks, env_bool, split_into_chunks_v2, get_silence_duration_v2
 from vieneu_utils.phonemize_text import phonemize_with_dict
 from sea_g2p import Normalizer
@@ -51,6 +57,77 @@ except Exception as e:
 BACKBONE_CONFIGS = _config.get("backbone_configs", {})
 CODEC_CONFIGS = _config.get("codec_configs", {})
 
+GPU_INSTALL_HINT = "uv sync --group gpu"
+
+
+def _module_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
+HAS_TRANSFORMERS = _module_available("transformers")
+HAS_NEUCODEC = _module_available("neucodec")
+HAS_LMDEPLOY = _module_available("lmdeploy")
+
+
+def _parse_version_parts(version: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for piece in version.replace("+", ".").replace("-", ".").split("."):
+        if piece.isdigit():
+            parts.append(int(piece))
+        else:
+            break
+    return tuple(parts)
+
+
+def get_lmdeploy_version() -> str | None:
+    if not HAS_LMDEPLOY:
+        return None
+    try:
+        return importlib.metadata.version("lmdeploy")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def get_missing_runtime_dependencies(
+    backbone_choice: str,
+    codec_choice: str,
+    force_lmdeploy: bool,
+    custom_model_id: str = "",
+) -> list[str]:
+    missing: list[str] = []
+    choice_lower = (backbone_choice or "").lower()
+    model_id_lower = (custom_model_id or "").lower()
+    is_custom = backbone_choice == "Custom Model"
+    is_turbo = "v2-turbo" in choice_lower
+    is_gpu_backbone = "(gpu)" in backbone_choice or (is_custom and "gguf" not in model_id_lower and "v2-turbo" not in model_id_lower)
+    needs_transformers = is_gpu_backbone or (is_turbo and "cpu" not in choice_lower and not ("gguf" in model_id_lower))
+    needs_neucodec = "distill" in codec_choice.lower() or "neucodec" in codec_choice.lower()
+
+    if needs_transformers and not HAS_TRANSFORMERS:
+        missing.append("transformers")
+    if needs_neucodec and not HAS_NEUCODEC:
+        missing.append("neucodec")
+    if force_lmdeploy and should_use_lmdeploy(backbone_choice, "CUDA") and not HAS_LMDEPLOY:
+        missing.append("lmdeploy")
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for item in missing:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
+
+
+def format_missing_dependency_message(missing: list[str]) -> str:
+    packages = ", ".join(missing)
+    return (
+        "❌ Thiếu dependencies cho GPU backend.\n\n"
+        f"Cần cài thêm: {packages}\n"
+        f"Chạy lệnh: `{GPU_INSTALL_HINT}`\n\n"
+        "Sau khi cài xong, hãy khởi động lại app và tải model lại."
+    )
+
 # Refilter and Simplify Configs per requirements
 HAS_GPU = False
 try:
@@ -60,7 +137,7 @@ except ImportError:
     pass
 
 filtered_backbones = {}
-if HAS_GPU:
+if HAS_GPU and HAS_TRANSFORMERS and HAS_NEUCODEC:
     filtered_backbones["VieNeu-TTS (GPU)"] = {
         "repo": "pnnbao-ump/VieNeu-TTS",
         "supports_streaming": False,
@@ -285,32 +362,52 @@ def restore_ui_state():
     """Update UI components based on persistence"""
     global model_loaded
     msg = get_model_status_message()
+    if HAS_GPU and ("VieNeu-TTS (GPU)" not in BACKBONE_CONFIGS):
+        msg += (
+            "\n\n⚠️ GPU models đang bị ẩn vì thiếu `transformers` hoặc `neucodec`."
+            f"\nCài bằng: `{GPU_INSTALL_HINT}`"
+        )
     return (
         msg, 
         gr.update(interactive=model_loaded), # btn_generate
         gr.update(interactive=False)         # btn_stop
     )
 
-def should_use_lmdeploy(backbone_choice: str, device_choice: str) -> bool:
-    """Determine if we should use LMDeploy backend."""
-    # LMDeploy not supported on macOS
+def get_lmdeploy_compatibility_issue(device_choice: str) -> str | None:
+    """Return a human-readable reason when LMDeploy should not be used."""
     if sys.platform == "darwin":
-        return False
+        return "LMDeploy không hỗ trợ macOS."
 
-    if "gguf" in backbone_choice.lower() or "v2-turbo" in backbone_choice.lower():
-        return False
-    
     try:
         import torch
-        if device_choice == "Auto":
-            has_gpu = torch.cuda.is_available()
-        elif device_choice == "CUDA":
-            has_gpu = torch.cuda.is_available()
-        else:
-            has_gpu = False
-        return has_gpu
     except ImportError:
+        return "Thiếu PyTorch."
+
+    wants_cuda = device_choice in {"Auto", "CUDA"}
+    if not wants_cuda or not torch.cuda.is_available():
+        return "LMDeploy yêu cầu NVIDIA CUDA GPU khả dụng."
+
+    try:
+        major, minor = torch.cuda.get_device_capability(0)
+        gpu_name = torch.cuda.get_device_name(0)
+    except Exception:
+        return None
+
+    lmdeploy_version = get_lmdeploy_version()
+    if major >= 12 and lmdeploy_version is not None and _parse_version_parts(lmdeploy_version) < (0, 12, 2):
+        return (
+            f"LMDeploy {lmdeploy_version} chưa tương thích ổn định với GPU {gpu_name} "
+            f"(compute capability {major}.{minor}). Hãy nâng lên LMDeploy >= 0.12.2."
+        )
+
+    return None
+
+def should_use_lmdeploy(backbone_choice: str, device_choice: str) -> bool:
+    """Determine if we should use LMDeploy backend."""
+    if "gguf" in backbone_choice.lower() or "v2-turbo" in backbone_choice.lower():
         return False
+
+    return get_lmdeploy_compatibility_issue(device_choice) is None
 
 @lru_cache(maxsize=32)
 def get_ref_text_cached(text_path: str) -> str:
@@ -391,6 +488,23 @@ def load_model(backbone_choice: str, codec_choice: str, device_choice: str,
             gr.update(interactive=False), # btn_stop
             voice_update,
             tab_p, tab_c, tab_sel, mode_state
+        )
+        return
+
+    missing_runtime_deps = get_missing_runtime_dependencies(
+        backbone_choice=backbone_choice,
+        codec_choice=codec_choice,
+        force_lmdeploy=force_lmdeploy,
+        custom_model_id=custom_model_id,
+    )
+    if missing_runtime_deps:
+        yield (
+            format_missing_dependency_message(missing_runtime_deps),
+            gr.update(interactive=False),
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update()
         )
         return
 
@@ -486,6 +600,12 @@ def load_model(backbone_choice: str, codec_choice: str, device_choice: str,
              
         if should_use_generic_fast:
             use_lmdeploy = True
+
+        if force_lmdeploy and lmdeploy_error_reason is None:
+            lmdeploy_issue = get_lmdeploy_compatibility_issue(device_choice)
+            if lmdeploy_issue is not None:
+                lmdeploy_error_reason = lmdeploy_issue
+                use_lmdeploy = False
         
         if use_lmdeploy:
             lmdeploy_error_reason = None
@@ -1543,7 +1663,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                     )
                     max_batch_size_run = gr.Slider(
                         minimum=1, 
-                        maximum=16, 
+                        maximum=128, 
                         value=4, 
                         step=1, 
                         label="📊 Batch Size (Generation)",

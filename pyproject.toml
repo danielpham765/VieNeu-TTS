@@ -70,10 +70,11 @@ gpu = [
     "torch",
     "torchaudio",
     "neucodec>=0.0.4",
-    "lmdeploy; sys_platform != 'darwin'",
+    "lmdeploy==0.12.2; sys_platform == 'linux' and python_version == '3.11'",
+    "lmdeploy; sys_platform == 'win32'",
     "triton-windows; sys_platform == 'win32'",
     "triton; sys_platform == 'linux'",
-    "transformers; sys_platform == 'darwin'",
+    "transformers",
     "accelerate; sys_platform == 'darwin'",
 ]
 
@@ -88,10 +89,11 @@ gpu = [
     "torchaudio",
     "datasets>=3.2.0",
     "perth>=0.2.0",
-    "lmdeploy; sys_platform != 'darwin'",
+    "lmdeploy==0.12.2; sys_platform == 'linux' and python_version == '3.11'",
+    "lmdeploy; sys_platform == 'win32'",
     "triton-windows; sys_platform == 'win32'",
     "triton; sys_platform == 'linux'",
-    "transformers; sys_platform == 'darwin'",
+    "transformers",
     "accelerate; sys_platform == 'darwin'",
     "trafilatura>=2.0.0",
 ]
@@ -128,4 +130,9 @@ llama-cpp-python = [
     { url = "https://github.com/pnnbao97/VieNeu-TTS/releases/download/wheels-v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.12'" },
     { index = "llama-cpp-metal", marker = "sys_platform == 'darwin'" },
     { index = "pypi", marker = "sys_platform != 'win32' and sys_platform != 'darwin'" }
+]
+
+lmdeploy = [
+    { url = "https://github.com/InternLM/lmdeploy/releases/download/v0.12.2/lmdeploy-0.12.2+cu128-cp311-cp311-manylinux2014_x86_64.whl", marker = "sys_platform == 'linux' and python_version == '3.11'" },
+    { index = "pypi", marker = "sys_platform == 'win32'" }
 ]

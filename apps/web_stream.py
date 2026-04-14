@@ -2,10 +2,19 @@
 import os
 import time
 import asyncio
+import sys
+from pathlib import Path
 import numpy as np
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
 import uvicorn
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SRC_DIR = (PROJECT_ROOT / "src").resolve()
+
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
 from vieneu import Vieneu
 import io
 import wave
