@@ -1,6 +1,19 @@
 import os
 import sys
 import subprocess
+import tempfile
+from pathlib import Path
+from uuid import uuid4
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_GRADIO_CACHE_DIR = (PROJECT_ROOT / ".cache" / "gradio").resolve()
+GRADIO_CACHE_DIR = Path(os.getenv("GRADIO_TEMP_DIR", str(DEFAULT_GRADIO_CACHE_DIR))).expanduser()
+if not GRADIO_CACHE_DIR.is_absolute():
+    GRADIO_CACHE_DIR = (PROJECT_ROOT / GRADIO_CACHE_DIR).resolve()
+else:
+    GRADIO_CACHE_DIR = GRADIO_CACHE_DIR.resolve()
+GRADIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["GRADIO_TEMP_DIR"] = str(GRADIO_CACHE_DIR)
 
 # --- Add XPU dll path ---
 intel_dll_path = os.path.join(sys.prefix, 'Library', 'bin')
@@ -13,18 +26,19 @@ else:
 import torch
 import gradio as gr
 import soundfile as sf
-import tempfile
 import time
 import numpy as np
 import queue
 import threading
 import yaml
 import gc
+from urllib.parse import unquote
 
 from vieneu.core_xpu import XPUVieNeuTTS
 from vieneu_utils.core_utils import split_text_into_chunks, join_audio_chunks, env_bool
 from sea_g2p import Normalizer
 from functools import lru_cache
+MAX_GENERATION_BATCH_SIZE = 256
 
 try:
     if not hasattr(torch, 'xpu') or not torch.xpu.is_available():
@@ -61,10 +75,154 @@ if not BACKBONE_CONFIGS or not CODEC_CONFIGS:
 tts = None
 current_backbone = None
 current_codec = None
+current_model_signature = None
 model_loaded = False
 
 # Normalizer (module-level singleton)
 _text_normalizer = Normalizer()
+
+
+def _allowed_cleanup_roots() -> list[Path]:
+    roots = [GRADIO_CACHE_DIR, Path(tempfile.gettempdir()).resolve()]
+    configured_temp_dir = os.getenv("GRADIO_TEMP_DIR")
+    if configured_temp_dir:
+        try:
+            configured_path = Path(configured_temp_dir).expanduser()
+            if not configured_path.is_absolute():
+                configured_path = PROJECT_ROOT / configured_path
+            roots.append(configured_path.resolve())
+        except Exception:
+            pass
+    return roots
+
+
+def _resolve_cleanup_path(file_name: str) -> Path | None:
+    raw = str(file_name or "").strip()
+    if not raw:
+        return None
+
+    if "file=" in raw:
+        raw = raw.split("file=", 1)[1]
+    raw = unquote(raw).strip()
+    if not raw:
+        return None
+
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        return None
+
+    try:
+        resolved = candidate.resolve(strict=False)
+    except Exception:
+        return None
+
+    if resolved.suffix.lower() != ".wav":
+        return None
+
+    if not any(root == resolved or root in resolved.parents for root in _allowed_cleanup_roots()):
+        return None
+
+    return resolved
+
+
+def _generated_audio_dir() -> Path:
+    output_dir = (GRADIO_CACHE_DIR / "output_audio").resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def _write_generated_audio(audio_data: np.ndarray, sample_rate: int, *, prefix: str) -> str:
+    output_path = _generated_audio_dir() / f"{prefix}_{uuid4().hex}.wav"
+    sf.write(output_path, audio_data, sample_rate)
+    return str(output_path)
+
+
+def delete_output_audio_file(file_name: str) -> str:
+    """Delete generated audio artifacts after a client downloads them."""
+    target_path = _resolve_cleanup_path(file_name)
+    if target_path is None:
+        return "⚠️ Thiếu hoặc sai fileName cần xóa."
+
+    if not target_path.exists():
+        return f"⚠️ Không tìm thấy file cần xóa: {target_path}"
+
+    try:
+        target_path.unlink()
+    except Exception as exc:
+        return f"❌ Không thể xóa file: {exc}"
+
+    try:
+        parent_dir = target_path.parent.resolve(strict=False)
+    except Exception:
+        parent_dir = None
+
+    if parent_dir is not None:
+        for root in _allowed_cleanup_roots():
+            if parent_dir != root and root in parent_dir.parents:
+                try:
+                    parent_dir.rmdir()
+                except OSError:
+                    pass
+                break
+
+    return f"✅ Đã xóa: {target_path}"
+
+
+def _build_model_signature(
+    backbone_choice: str,
+    codec_choice: str,
+    device_choice: str,
+    custom_model_id: str = "",
+    custom_base_model: str = "",
+) -> tuple[str, str, str, str, str]:
+    return (
+        str(backbone_choice or "").strip(),
+        str(codec_choice or "").strip(),
+        str(device_choice or "").strip(),
+        str(custom_model_id or "").strip(),
+        str(custom_base_model or "").strip(),
+    )
+
+
+def _build_voice_update():
+    try:
+        voices = tts.list_preset_voices()
+    except Exception:
+        voices = []
+
+    has_voices = len(voices) > 0
+
+    if has_voices:
+        default_v = tts._default_voice
+        is_tuple = len(voices) > 0 and isinstance(voices[0], tuple)
+        voice_values = [v[1] for v in voices] if is_tuple else voices
+
+        if not default_v and voice_values:
+            default_v = voice_values[0]
+
+        if default_v and default_v not in voice_values:
+            if is_tuple:
+                voices.append((default_v, default_v))
+            else:
+                voices.append(default_v)
+
+        if is_tuple:
+            voices.sort(key=lambda x: str(x[0]))
+        else:
+            voices.sort()
+
+        voice_update = gr.update(choices=voices, value=default_v, interactive=True)
+    else:
+        msg = "⚠️ Không tìm thấy file voices.json. Vui lòng dùng Tab Voice Cloning."
+        voice_update = gr.update(choices=[msg], value=msg, interactive=False)
+
+    return (
+        voice_update,
+        gr.update(visible=True),
+        gr.update(visible=True),
+        gr.update(selected="preset_mode"),
+        "preset_mode",
+    )
 
 def get_available_devices() -> list[str]:
     """Chỉ trả về XPU cho phiên bản này."""
@@ -118,7 +276,32 @@ def cleanup_gpu_memory():
 def load_model(backbone_choice: str, codec_choice: str, device_choice: str, 
                custom_model_id: str = "", custom_base_model: str = "", custom_hf_token: str = ""):
     """Load model with XPU optimizations"""
-    global tts, current_backbone, current_codec, model_loaded
+    global tts, current_backbone, current_codec, current_model_signature, model_loaded
+    requested_signature = _build_model_signature(
+        backbone_choice,
+        codec_choice,
+        device_choice,
+        custom_model_id,
+        custom_base_model,
+    )
+
+    if model_loaded and tts is not None and current_model_signature == requested_signature:
+        success_msg = get_model_status_message().replace(
+            "✅ Model đã tải thành công!\n\n",
+            "✅ Model đã được tải sẵn!\n\n",
+            1,
+        )
+        voice_update, tab_p, tab_c, tab_sel, mode_state = _build_voice_update()
+        yield (
+            success_msg,
+            gr.update(interactive=True),
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            voice_update,
+            tab_p, tab_c, tab_sel, mode_state
+        )
+        return
+
     model_loaded = False 
     
     yield (
@@ -212,51 +395,11 @@ def load_model(backbone_choice: str, codec_choice: str, device_choice: str,
         
         current_backbone = backbone_choice
         current_codec = codec_choice
+        current_model_signature = requested_signature
         model_loaded = True
         
         success_msg = get_model_status_message()
-            
-        # Prepare voice update
-        try:
-            voices = tts.list_preset_voices()
-        except Exception:
-            voices = []
-
-        has_voices = len(voices) > 0
-        
-        if has_voices:
-            default_v = tts._default_voice
-            is_tuple = (len(voices) > 0 and isinstance(voices[0], tuple))
-            voice_values = [v[1] for v in voices] if is_tuple else voices
-            
-            if not default_v and voice_values:
-                 default_v = voice_values[0]
-
-            if default_v and default_v not in voice_values:
-                if is_tuple:
-                    voices.append((default_v, default_v))
-                else:
-                    voices.append(default_v)
-            
-            if is_tuple:
-                voices.sort(key=lambda x: str(x[0]))
-            else:
-                voices.sort()
-
-            voice_update = gr.update(choices=voices, value=default_v, interactive=True)
-            
-            tab_p = gr.update(visible=True)
-            tab_c = gr.update(visible=True)
-            tab_sel = gr.update(selected="preset_mode")
-            mode_state = "preset_mode"
-        else:
-            msg = "⚠️ Không tìm thấy file voices.json. Vui lòng dùng Tab Voice Cloning."
-            voice_update = gr.update(choices=[msg], value=msg, interactive=False)
-            
-            tab_p = gr.update(visible=True)
-            tab_c = gr.update(visible=True)
-            tab_sel = gr.update(selected="preset_mode")
-            mode_state = "preset_mode"
+        voice_update, tab_p, tab_c, tab_sel, mode_state = _build_voice_update()
 
         yield (
             success_msg,
@@ -268,6 +411,7 @@ def load_model(backbone_choice: str, codec_choice: str, device_choice: str,
         )
         
     except Exception as e:
+        current_model_signature = None
         import traceback
         traceback.print_exc()
         model_loaded = False
@@ -298,6 +442,8 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
     if not text or text.strip() == "":
         yield None, "⚠️ Vui lòng nhập văn bản!"
         return
+
+    max_batch_size_run = max(1, min(int(max_batch_size_run), MAX_GENERATION_BATCH_SIZE))
     
     raw_text = text.strip()
     
@@ -377,9 +523,7 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                 
                 final_wav = join_audio_chunks(all_wavs, sr=sr, silence_p=0.15)
             
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                    sf.write(tmp.name, final_wav, sr)
-                    output_path = tmp.name
+                output_path = _write_generated_audio(final_wav, sr, prefix="tts_output")
                 
                 process_time = time.time() - start_time
                 speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
@@ -418,9 +562,7 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             
             final_wav = join_audio_chunks(all_wavs, sr=sr, silence_p=0.15)
             
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                sf.write(tmp.name, final_wav, sr)
-                output_path = tmp.name
+            output_path = _write_generated_audio(final_wav, sr, prefix="tts_output")
             
             process_time = time.time() - start_time
             speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
@@ -544,9 +686,8 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
         
         if full_audio_buffer:
             final_wav = np.concatenate(full_audio_buffer)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                sf.write(tmp.name, final_wav, sr)
-                yield tmp.name, f"✅ Hoàn tất Streaming! (Intel XPU)"
+            output_path = _write_generated_audio(final_wav, sr, prefix="tts_stream")
+            yield output_path, f"✅ Hoàn tất Streaming! (Intel XPU)"
             
             cleanup_gpu_memory()
 
@@ -787,7 +928,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS (XPU)", head=head_html) a
                     )
                     max_batch_size_run = gr.Slider(
                         minimum=1, 
-                        maximum=256, 
+                        maximum=MAX_GENERATION_BATCH_SIZE, 
                         value=128, 
                         step=1, 
                         label="📊 Batch Size (Generation)",
@@ -827,6 +968,9 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS (XPU)", head=head_html) a
                     max_lines=10,
                     show_copy_button=True
                 )
+                cleanup_path_input = gr.Textbox(visible=False)
+                cleanup_status_output = gr.Textbox(visible=False)
+                cleanup_button = gr.Button("cleanup_output_audio", visible=False)
                 gr.Markdown("<div style='text-align: center; color: #64748b; font-size: 0.8rem;'>🔒 Audio được đóng dấu bản quyền ẩn (Watermarker) để bảo mật và định danh AI.</div>")
         
         # --- EVENT HANDLERS ---
@@ -907,6 +1051,16 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS (XPU)", head=head_html) a
         btn_stop.click(fn=None, cancels=[generate_event])
         btn_stop.click(lambda: (None, "⏹️ Đã dừng tạo giọng nói."), outputs=[audio_output, status_output])
         btn_stop.click(lambda: gr.update(interactive=False), outputs=btn_stop)
+
+        cleanup_button.click(
+            fn=delete_output_audio_file,
+            inputs=[cleanup_path_input],
+            outputs=[cleanup_status_output],
+            api_name="delete_output_audio",
+            api_description="Delete generated server-side .wav artifacts from allowed temporary folders.",
+            queue=False,
+            show_api=True,
+        )
 
         demo.load(
             fn=restore_ui_state,
